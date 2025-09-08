@@ -1,0 +1,92 @@
+Seedling_ID,Temperature_box,Box_unit,Myco_Inferno_ID,Sterile_Category,Burn_Category,Diversity_Class
+SOUP047,15,1,DL508 PP,Unsterilized,Low severity (Old burn),High
+SOUP094,15,2,illegible,Unsterilized,Low severity (Old burn),High
+SOUP103,15,1,illegible,Unsterilized,Low severity (Old burn),High
+SOUP105,15,2,DL673 PP,Unsterilized,Low severity (Old burn),High
+SOUP006,15,1,illegible,Unsterilized,High severity,Low
+SOUP014,15,1,illegible,Unsterilized,High severity,Low
+SOUP036,15,2,DL644 PP,Unsterilized,High severity,Low
+SOUP042,15,2,illegible,Unsterilized,High severity,Low
+SOUP044,15,2,DL647 PP,Unsterilized,High severity,Low
+SOUP035,15,2,illegible,Unsterilized,No burn,Medium
+SOUP038,15,2,illegible,Unsterilized,No burn,Medium
+SOUP039,15,2,illegible,Unsterilized,No burn,Medium
+SOUP039,15,2,illegible,Unsterilized,No burn,Medium
+SOUP049,15,1,illegible,Unsterilized,No burn,Medium
+SOUP050,15,1,illegible,Unsterilized,No burn,Medium
+SOUP051,15,1,illegible,Unsterilized,No burn,Medium
+SOUP003,15,1,DL29,Sterilized,No burn,None
+SOUP004,15,1,illegible,Sterilized,No burn,None
+SOUP010,15,1,illegible,Sterilized,No burn,None
+SOUP012,15,2,DL377,Sterilized,Low severity (Old burn),None
+SOUP013,15,1,DL377,Sterilized,Low severity (Old burn),None
+SOUP041,15,2,illegible,Sterilized,No burn,None
+SOUP043,15,2,illegible,Sterilized,No burn,None
+SOUP048,15,1,DL370 PP,Sterilized,Low severity (Old burn),None
+SOUP055,15,2,DL373 PP,Sterilized,Low severity (Old burn),None
+SOUP052,25,2,DL699,Unsterilized,Low severity (Old burn),High
+SOUP097,25,1,illegible,Unsterilized,Low severity (Old burn),High
+SOUP104,25,2,DL596 PP,Unsterilized,Low severity (Old burn),High
+SOUP106,25,1,DL575 PP,Unsterilized,Low severity (Old burn),High
+SOUP107,25,2,illegible,Unsterilized,Low severity (Old burn),High
+SOUP005,25,1,illegible,Unsterilized,High severity,Low
+SOUP009,25,1,illegible,Unsterilized,High severity,Low
+SOUP011,25,2,illegible,Unsterilized,High severity,Low
+SOUP015,25,1,292 DF,Unsterilized,High severity,Low
+SOUP015,25,1,292 DF,Unsterilized,High severity,Low
+SOUP019,25,2,DL224 PP,Unsterilized,High severity,Low
+SOUP020,25,1,illegible,Unsterilized,No burn,Medium
+SOUP025,25,1,illegible,Unsterilized,No burn,Medium
+SOUP026,25,1,127 DF,Unsterilized,No burn,Medium
+SOUP033,25,2,illegible,Unsterilized,No burn,Medium
+SOUP034,25,2,illegible,Unsterilized,No burn,Medium
+SOUP001,25,1,DL94,Sterilized,No burn,None
+SOUP002,25,1,DL403,Sterilized,No burn,None
+SOUP007,25,2,illegible,Sterilized,No burn,None
+SOUP008,25,2,DL399,Sterilized,No burn,None
+SOUP016,25,1,illegible,Sterilized,Low severity (Old burn),None
+SOUP017,25,2,illegible,Sterilized,Low severity (Old burn),None
+SOUP018,25,2,DL366 PP,Sterilized,Low severity (Old burn),None
+SOUP054,25,1,,Sterilized,Low severity (Old burn),None
+SOUP069,Variable,2,illegible,Unsterilized,Low severity (Old burn),High
+SOUP081,Variable,2,illegible,Unsterilized,Low severity (Old burn),High
+SOUP087,Variable,1,DL562,Unsterilized,Low severity (Old burn),High
+SOUP090,Variable,2,illegible,Unsterilized,Low severity (Old burn),High
+SOUP119,Variable,1,illegible,Unsterilized,Low severity (Old burn),High
+SOUP122,Variable,2,DL587,Unsterilized,Low severity (Old burn),High
+SOUP068,Variable,1,illegible,Unsterilized,High severity,Low
+SOUP073,Variable,1,DL621,Unsterilized,High severity,Low
+SOUP083,Variable,2,DL618 PP,Unsterilized,High severity,Low
+SOUP112,Variable,1,illegible,Unsterilized,High severity,Low
+SOUP123,Variable,2,DL134,Unsterilized,High severity,Low
+SOUP126,Variable,1,DL607,Unsterilized,High severity,Low
+SOUP075,Variable,1,illegible,Unsterilized,No burn,Medium
+SOUP077,Variable,1,DL154,Unsterilized,No burn,Medium
+SOUP079,Variable,2,illegible,Unsterilized,No burn,Medium
+SOUP082,Variable,2,DL622 PP,Unsterilized,No burn,Medium
+SOUP086,Variable,2,DL547 PP,Unsterilized,No burn,Medium
+SOUP088,Variable,1,DL537,Unsterilized,No burn,Medium
+SOUP120,Variable,2,illegible,Unsterilized,No burn,Medium
+SOUP071,Variable,2,DL81,Sterilized,No burn,None
+SOUP072,Variable,1,illegible,Sterilized,Low severity (Old burn),None
+SOUP078,Variable,1,illegible,Sterilized,No burn,None
+SOUP085,Variable,1,illegible,Sterilized,Low severity (Old burn),None
+SOUP089,Variable,2,illegible,Sterilized,Low severity (Old burn),None
+SOUP108,Variable,2,illegible,Sterilized,No burn,None
+SOUP109,Variable,1,illegible,Sterilized,No burn,None
+SOUP111,Variable,1,illegible,Sterilized,Low severity (Old burn),None
+SOUP113,Variable,1,illegible,Sterilized,Low severity (Old burn),None
+SOUP114,Variable,1,illegible,Sterilized,No burn,None
+SOUP115,Variable,2,illegible,Sterilized,No burn,None
+SOUP116,Variable,2,illegible,Sterilized,Low severity (Old burn),None
+SOUP117,Variable,2,DL112,Sterilized,High severity,None
+SOUP118,Variable,2,illegible,Sterilized,Low severity (Old burn),None
+SOUP121,Variable,1,illegible,Sterilized,High severity,None
+SOUP124,Variable,2,illegible,Sterilized,No burn,None
+SOUP125,Variable,1,illegible,Sterilized,No burn,None
+SOUP074,Variable,1,,Unsterilized,Low severity (Old burn),High
+SOUP076,Variable,1,,Unsterilized,No burn,Medium
+SOUP080,Variable,2,illegible,Unsterilized,High severity,Low
+SOUP084,Variable,1,,Unsterilized,No burn,Medium
+SOUP024,25,2,DL546,Unsterilized,No burn,Medium
+SOUP110,Variable,1,,Unsterilized,Low severity (Old burn),High

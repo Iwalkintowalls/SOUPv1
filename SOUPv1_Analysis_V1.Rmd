@@ -1,0 +1,1771 @@
+---
+title: "SOUPv1_Analysis_V1"
+author: "Sarif Morningstar"
+date: "2025-09-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# install.packages(c("readxl","dplyr","stringr","lubridate","janitor","purrr","here"))
+library(readxl)
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(janitor)
+library(purrr)
+library(here)
+
+# --- Robust project paths ---
+# If your project root is the folder that already *is* "Raw Data", use it.
+# Otherwise, append "Raw Data" to the project root.
+root <- here::here()
+data_dir <- if (basename(root) == "Raw Data") root else here::here("Raw Data")
+
+# (Optional) sanity check:
+# message("Project root: ", root)
+# message("Data dir: ", data_dir)
+
+make_header_names <- function(groups, vars, units) {
+  u_fmt <- ifelse(is.na(units) | units == "", "", paste0(" [", units, "]"))
+  nm <- paste0(ifelse(groups == "" | is.na(groups), "UNGROUPED", groups), "__",
+               ifelse(vars == "" | is.na(vars), "unnamed", vars),
+               u_fmt)
+  nm %>%
+    stringr::str_replace_all("\\s+", " ") %>%
+    stringr::str_replace_all("[\\+/]+", "_per_") %>%
+    stringr::str_replace_all("[^A-Za-z0-9_ \\[\\]-]", "_") %>%
+    stringr::str_squish() %>%
+    janitor::make_clean_names(case = "none")
+}
+
+read_licor_excel <- function(path, sheet = 1) {
+  hdr <- readxl::read_excel(path, sheet = sheet, range = cell_limits(c(1,1), c(3, NA)),
+                            col_names = FALSE, .name_repair = "minimal")
+  groups <- as.character(unlist(hdr[1, ]))
+  vars   <- as.character(unlist(hdr[2, ]))
+  units  <- as.character(unlist(hdr[3, ]))
+  new_names <- make_header_names(groups, vars, units)
+
+  dat <- readxl::read_excel(
+    path, sheet = sheet, skip = 3, col_names = new_names,
+    na = c("", "NA")
+  ) %>%
+    dplyr::mutate(across(everything(), ~{
+      if (is.character(.x)) {
+        .x <- stringr::str_squish(.x)
+        .x[.x %in% c("-9999", "-9999.0", "-9999.000")] <- NA_character_
+        .x
+      } else if (is.numeric(.x)) {
+        .x[.x %in% c(-9999, -9999.0, -9999.000)] <- NA_real_
+        .x
+      } else .x
+    }))
+
+  list(data = dat, groups = groups, vars = vars, units = units, names = new_names)
+}
+
+get_first_date <- function(file_path, hdr_vars, cleaned_names, dat) {
+  idx <- which(tolower(hdr_vars) == "date")
+  if (length(idx) >= 1) {
+    v <- dat[[ cleaned_names[idx[1]] ]][1]
+    d <- tryCatch({
+      if (inherits(v, "Date")) v else if (inherits(v, "POSIXt")) as.Date(v) else {
+        if (is.numeric(v)) as.Date(v, origin = "1899-12-30") else {
+          v <- stringr::str_squish(as.character(v))
+          d <- suppressWarnings(lubridate::ymd(v))
+          if (is.na(d)) suppressWarnings(lubridate::ymd(gsub("[^0-9]", "", v))) else d
+        }
+      }
+    }, error = function(e) NA_Date_)
+    if (!is.na(d)) return(as.Date(d))
+  }
+
+  cand <- grep("__Date\\b", cleaned_names, ignore.case = TRUE, value = TRUE)
+  if (length(cand)) {
+    v <- dat[[ cand[1] ]][1]
+    d <- tryCatch({
+      if (inherits(v, "Date")) v else if (inherits(v, "POSIXt")) as.Date(v) else {
+        if (is.numeric(v)) as.Date(v, origin = "1899-12-30") else {
+          v <- stringr::str_squish(as.character(v))
+          d <- suppressWarnings(lubridate::ymd(v))
+          if (is.na(d)) suppressWarnings(lubridate::ymd(gsub("[^0-9]", "", v))) else d
+        }
+      }
+    }, error = function(e) NA_Date_)
+    if (!is.na(d)) return(as.Date(d))
+  }
+
+  fn <- basename(file_path)
+  m <- stringr::str_match(fn, "(20\\d{2})[_-]?(\\d{2})[_-]?(\\d{2})")
+  if (!all(is.na(m))) {
+    y <- as.integer(m[2]); mo <- as.integer(m[3]); da <- as.integer(m[4])
+    d <- suppressWarnings(lubridate::make_date(y, mo, da))
+    if (!is.na(d)) return(d)
+  }
+  m2 <- stringr::str_match(fn, "(20\\d{2})(\\d{2})(\\d{2})")
+  if (!all(is.na(m2))) {
+    y <- as.integer(m2[2]); mo <- as.integer(m2[3]); da <- as.integer(m2[4])
+    d <- suppressWarnings(lubridate::make_date(y, mo, da))
+    if (!is.na(d)) return(d)
+  }
+
+  NA_Date_
+}
+
+# ---- Load all Excel files under data_dir
+files <- list.files(data_dir, pattern = "\\.(xlsx|xls)$", full.names = TRUE)
+
+for (f in files) {
+  x <- read_licor_excel(f, sheet = 1)
+  dat <- x$data
+  d_first <- get_first_date(f, x$vars, x$names, dat)
+
+  if (is.na(d_first)) {
+    nm <- paste0("df_unknown_", tools::file_path_sans_ext(basename(f)))
+    assign(nm, dat, envir = .GlobalEnv)
+    message("Could not determine date for ", basename(f), "; assigning ", nm)
+  } else {
+    df_name <- paste0("df_", format(d_first, "%m%d"))
+    assign(df_name, dat, envir = .GlobalEnv)
+    message("Loaded ", basename(f), " into ", df_name)
+  }
+}
+
+# ---- Load Plant ID (relative to data_dir)
+id_path <- file.path(data_dir, "Plant ID", "Plant ID SOUP - SOUP Chamber Seedling ID assignment.csv")
+if (!file.exists(id_path)) {
+  stop("Plant ID CSV not found at: ", id_path, "\nCheck your project root or folder name.")
+}
+df_id <- read.csv(id_path, stringsAsFactors = FALSE)
+
+# ---- Load Initial Physical (relative to data_dir)
+phys_path <- file.path(data_dir, "Initial Data", "SOUPv1 Initial Physical data.csv")
+if (!file.exists(phys_path)) {
+  stop("Initial Physical CSV not found at: ", phys_path, "\nCheck your project root or folder name.")
+}
+df_initial_physical <- read.csv(phys_path, stringsAsFactors = FALSE)
+
+if (!exists("data_dir")) {
+  root <- here::here()
+  data_dir <- if (basename(root) == "Raw Data") root else here::here("Raw Data")
+}
+
+# End Point Data -> SOUP_Colonization_rate.csv
+end_path <- file.path(data_dir, "End Point Data", "SOUP_Colonization_rate.csv")
+if (!file.exists(end_path)) stop("File not found: ", end_path)
+
+df_colonization <- read.csv(end_path, stringsAsFactors = FALSE)
+
+```
+Clean data frame
+```{r}
+library(dplyr)
+
+# Function to clean a single data frame
+clean_df <- function(df) {
+  df %>%
+    filter(
+      is.na(USERDEF_remark) | USERDEF_remark != "Flag",   # remove "Flag"
+      !is.na(USERDEF_Plant_number),                       # drop NA
+      USERDEF_Plant_number != "",                         # drop empty string
+      trimws(USERDEF_Plant_number) != ""                  # drop whitespace-only
+    )
+}
+
+# Find all df_mmdd objects in your environment
+df_names <- ls(pattern = "^df_\\d{4}$")
+
+# Apply cleaning in place
+for (nm in df_names) {
+  df <- get(nm, envir = .GlobalEnv)
+  assign(nm, clean_df(df), envir = .GlobalEnv)
+  message("Cleaned: ", nm)
+}
+
+# Example: check one
+# dplyr::count(df_0317, USERDEF_remark)
+
+```
+
+#df_0317 is the actual start. df_0310 was used to determine the appropriate amount of fvfm measurment 
+Check for missing data
+The physical data appear to be incomplete at the moment
+```{r}
+# --- Normalizer: enforce "SOUP###"
+norm_soup_id <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  x <- gsub("[^A-Z0-9]", "", x)
+  ifelse(grepl("^[0-9]+$", x),
+         sprintf("SOUP%03d", as.integer(x)),
+         ifelse(grepl("^SOUP\\d+$", x),
+                sprintf("SOUP%03d", as.integer(sub("^SOUP", "", x))),
+                x))
+}
+
+# --- Helper to find plant column in df_0317 if name differs
+guess_plant_col <- function(nms) {
+  cand <- grep("(?i)\\bplant\\s*number\\b|\\bplant\\s*id\\b|\\bseedling\\b|\\bsoup\\b",
+               nms, value = TRUE, perl = TRUE)
+  if (length(cand)) cand[1] else stop("Couldn't find a Plant/Seedling ID column in df_0317")
+}
+
+plant_col_0317 <- if ("USERDEF_Plant_number" %in% names(df_0317))
+  "USERDEF_Plant_number" else guess_plant_col(names(df_0317))
+
+# --- Extract & normalize IDs from each table
+ids_initial <- df_initial_physical %>%
+  mutate(ID_clean = norm_soup_id(`SOUP.Plant`)) %>%
+  pull(ID_clean) %>% unique()
+
+ids_id <- df_id %>%
+  mutate(ID_clean = norm_soup_id(Seedling_ID)) %>%
+  pull(ID_clean) %>% unique()
+
+ids_0317 <- df_0317 %>%
+  mutate(ID_clean = norm_soup_id(.data[[plant_col_0317]])) %>%
+  pull(ID_clean) %>% unique()
+
+# --- Presence/absence table
+all_ids <- union(union(ids_initial, ids_id), ids_0317)
+comparison_0317 <- tibble(
+  ID        = all_ids,
+  in_initial = ID %in% ids_initial,
+  in_id      = ID %in% ids_id,
+  in_0317    = ID %in% ids_0317
+)
+
+# --- What's missing where (pairwise presence, third missing)
+missing_from_initial_0317 <- comparison_0317 %>% filter(!in_initial & in_id & in_0317)
+missing_from_id_0317      <- comparison_0317 %>% filter(!in_id & in_initial & in_0317)
+missing_from_0317         <- comparison_0317 %>% filter(!in_0317 & in_initial & in_id)
+
+# Inspect
+message("Presence/absence across df_initial_physical, df_id, df_0317:")
+print(comparison_0317)
+
+message("\nPresent in df_id + df_0317 but MISSING from df_initial_physical:")
+print(missing_from_initial_0317)
+
+message("\nPresent in df_initial_physical + df_0317 but MISSING from df_id:")
+print(missing_from_id_0317)
+
+message("\nPresent in df_initial_physical + df_id but MISSING from df_0317:")
+print(missing_from_0317)
+```
+Check preceeding data set against the initial measurment of 3/17. Unexpected missing of measurment for SOUP104 on 05032025. All other missings are result from harvest and is expected.
+```{r}
+library(dplyr)
+library(stringr)
+library(purrr)
+library(tidyr)
+
+# --- Toggle: also exclude df_0310? ---
+exclude_0310 <- FALSE   # set TRUE if you want to skip df_0310
+
+# --- ID normalizer -> "SOUP###"
+norm_soup_id <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  x <- gsub("[^A-Z0-9]", "", x)
+  ifelse(grepl("^[0-9]+$", x),
+         sprintf("SOUP%03d", as.integer(x)),
+         ifelse(grepl("^SOUP\\d+$", x),
+                sprintf("SOUP%03d", as.integer(sub("^SOUP", "", x))),
+                x))
+}
+
+# --- Find the plant column
+find_plant_col <- function(nms) {
+  if ("USERDEF_Plant_number" %in% nms) return("USERDEF_Plant_number")
+  cand <- grep("(?i)\\bplant\\s*number\\b|\\bplant\\s*id\\b|\\bseedling\\b|\\bsoup\\b",
+               nms, value = TRUE, perl = TRUE)
+  if (length(cand)) cand[1] else NA_character_
+}
+
+# --- IDs present in df_0317
+stopifnot(exists("df_0317"))
+plant_col_0317 <- find_plant_col(names(df_0317))
+stopifnot(!is.na(plant_col_0317))
+
+ids_0317 <- df_0317 %>%
+  transmute(ID = norm_soup_id(.data[[plant_col_0317]])) %>%
+  filter(!is.na(ID), ID != "") %>%
+  distinct(ID) %>%
+  pull()
+
+# --- Other df_#### names
+all_df_names <- ls(pattern = "^df_\\d{4}$")
+other_df_names <- setdiff(all_df_names, "df_0317")
+if (exclude_0310) other_df_names <- setdiff(other_df_names, "df_0310")
+
+# --- For each other df, report IDs that are in 0317 but missing there
+missing_lists <- map(other_df_names, function(nm) {
+  df <- get(nm, envir = .GlobalEnv)
+  pc <- find_plant_col(names(df))
+  if (is.na(pc)) {
+    tibble(df_name = nm, ID = NA_character_, note = "No plant column") %>% slice(0)
+  } else {
+    ids_other <- df %>%
+      transmute(ID = norm_soup_id(.data[[pc]])) %>%
+      filter(!is.na(ID), ID != "") %>%
+      distinct(ID) %>%
+      pull()
+    tibble(df_name = nm, ID = setdiff(ids_0317, ids_other))
+  }
+})
+
+missing_by_df <- bind_rows(missing_lists) %>%
+  arrange(df_name, ID)
+
+# --- Print per-frame summary
+for (nm in unique(missing_by_df$df_name)) {
+  sub <- missing_by_df %>% filter(df_name == nm)
+  if (nrow(sub) == 0) {
+    message("✅ ", nm, " contains all IDs seen in df_0317")
+  } else {
+    message("⚠️ IDs present in df_0317 but MISSING from ", nm, ":")
+    print(sub$ID, quote = FALSE)
+  }
+}
+
+# --- Optional: compact counts of how many IDs each frame is missing
+missing_counts <- missing_by_df %>%
+  group_by(df_name) %>%
+  summarise(n_missing = n(), .groups = "drop") %>%
+  arrange(desc(n_missing))
+
+# Inspect:
+# View(missing_by_df)
+# print(missing_counts)
+```
+
+See where there is more or less than 3 observation each after data clean up. Only four observation. Extra observation not caught by manual flag. Further inspection reveal that they would not significantly alter the result. Kept as is. 
+```{r}
+library(dplyr)
+library(stringr)
+library(purrr)
+
+# --- Normalizer
+norm_soup_id <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  x <- gsub("[^A-Z0-9]", "", x)
+  ifelse(grepl("^[0-9]+$", x),
+         sprintf("SOUP%03d", as.integer(x)),
+         ifelse(grepl("^SOUP\\d+$", x),
+                sprintf("SOUP%03d", as.integer(sub("^SOUP", "", x))),
+                x))
+}
+
+# --- Helper to locate plant column
+find_plant_col <- function(nms) {
+  if ("USERDEF_Plant_number" %in% nms) return("USERDEF_Plant_number")
+  cand <- grep("(?i)plant|seedling|soup", nms, value = TRUE)
+  if (length(cand)) cand[1] else NA_character_
+}
+
+# --- All df_mmdd names except 0310
+df_names <- setdiff(ls(pattern = "^df_\\d{4}$"), "df_0310")
+
+# --- For each data frame, count rows per SOUP ID and flag those not equal to 3
+for (nm in df_names) {
+  df <- get(nm, envir = .GlobalEnv)
+  plant_col <- find_plant_col(names(df))
+  if (is.na(plant_col)) {
+    message("Skipping ", nm, ": no plant column found")
+    next
+  }
+  
+  abnormal <- df %>%
+    mutate(ID_clean = norm_soup_id(.data[[plant_col]])) %>%
+    filter(!is.na(ID_clean), ID_clean != "") %>%
+    count(ID_clean, name = "n_instances") %>%
+    filter(n_instances != 3)
+  
+  if (nrow(abnormal) == 0) {
+    message("✅ All IDs in ", nm, " have exactly 3 rows")
+  } else {
+    message("⚠️ Abnormal counts in ", nm, ":")
+    print(abnormal)
+  }
+}
+```
+
+
+Merge data frame after clean up
+```{r}
+library(dplyr)
+library(purrr)
+library(stringr)
+library(lubridate)
+
+# columns to keep
+target_cols <- c("SYS_Date_YYYYMMDD", "USERDEF_Plant_number", "FLUORO_Fv_per_Fm")
+
+# grab every df_#### except df_0310
+df_names <- setdiff(ls(pattern = "^df_\\d{4}$"), "df_0310")
+stopifnot(length(df_names) > 0)
+
+df_long <- purrr::map_dfr(df_names, function(nm) {
+  df <- get(nm, envir = .GlobalEnv)
+
+  # skip frames missing required columns
+  missing <- setdiff(target_cols, names(df))
+  if (length(missing) > 0) {
+    message("Skipping ", nm, " (missing: ", paste(missing, collapse = ", "), ")")
+    return(NULL)
+  }
+
+  # select only the target cols (use namespaced dplyr to avoid masking)
+  dplyr::select(df, dplyr::all_of(target_cols))
+}) %>%
+  # light cleaning + typing
+  dplyr::mutate(
+    SYS_Date_YYYYMMDD    = lubridate::ymd(as.character(SYS_Date_YYYYMMDD)),
+    USERDEF_Plant_number = stringr::str_squish(as.character(USERDEF_Plant_number)),
+    FLUORO_Fv_per_Fm     = suppressWarnings(as.numeric(FLUORO_Fv_per_Fm))
+  ) %>%
+  # drop empty plant ids
+  dplyr::filter(!is.na(USERDEF_Plant_number), USERDEF_Plant_number != "") %>%
+  # stable order, then global observation index
+  dplyr::arrange(SYS_Date_YYYYMMDD, USERDEF_Plant_number) %>%
+  dplyr::mutate(Obs = dplyr::row_number()) %>%
+  dplyr::select(Obs, dplyr::all_of(target_cols))
+
+# peek
+# dplyr::glimpse(df_long)
+# head(df_long)
+
+```
+
+
+Merging column
+```{r}
+library(dplyr)
+library(stringr)
+
+# --- Normalizer -> "SOUP###"
+norm_soup_id <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  x <- gsub("[^A-Z0-9]", "", x)
+  ifelse(grepl("^[0-9]+$", x),
+         sprintf("SOUP%03d", as.integer(x)),
+         ifelse(grepl("^SOUP\\d+$", x),
+                sprintf("SOUP%03d", as.integer(sub("^SOUP", "", x))),
+                x))
+}
+
+# --- Identify the ID column in df_id (fallback if name differs)
+id_col <- if ("Seedling_ID" %in% names(df_id)) {
+  "Seedling_ID"
+} else {
+  cand <- grep("(?i)seedling.*id|soup.*id|soup.*plant|plant.*id", names(df_id), value = TRUE)
+  stopifnot(length(cand) > 0)
+  cand[1]
+}
+
+# --- Build a de-duplicated key table from df_id (keep all other columns)
+df_id_keys <- df_id %>%
+  dplyr::mutate(ID_clean = norm_soup_id(.data[[id_col]])) %>%
+  dplyr::filter(!is.na(ID_clean), ID_clean != "") %>%
+  dplyr::distinct(ID_clean, .keep_all = TRUE)
+
+# we'll want to select these columns (everything from df_id except the helper key)
+id_cols_to_add <- setdiff(names(df_id_keys), "ID_clean")
+
+# --- Merge onto your long frame and rename the three columns
+df_long_merged <- df_long %>%
+  dplyr::mutate(ID_clean = norm_soup_id(USERDEF_Plant_number)) %>%
+  dplyr::left_join(df_id_keys, by = "ID_clean") %>%
+  # put Obs first; rename the three requested columns; then append all df_id columns
+  dplyr::select(
+    Obs,
+    Date    = SYS_Date_YYYYMMDD,
+    `SOUP ID` = USERDEF_Plant_number,
+    FvFm    = FLUORO_Fv_per_Fm,
+    dplyr::all_of(id_cols_to_add)
+  )
+
+# Peek
+# dplyr::glimpse(df_long_merged)
+# head(df_long_merged)
+
+```
+Leading 0
+```{r}
+
+# --- 1) Normalizer -> "SOUP###"
+norm_soup_id <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  x <- gsub("[^A-Z0-9]", "", x)
+  ifelse(grepl("^[0-9]+$", x),
+         sprintf("SOUP%03d", as.integer(x)),
+         ifelse(grepl("^SOUP\\d+$", x),
+                sprintf("SOUP%03d", as.integer(sub("^SOUP", "", x))),
+                x))
+}
+
+# --- 2) Normalize IDs in BOTH data sets
+# df_long_merged: fix missing leading zeros in `SOUP ID`
+ids_chr  <- as.character(df_long_merged[["SOUP ID"]])
+ids_norm <- norm_soup_id(ids_chr)
+levs     <- unique(ids_norm)
+levs     <- levs[order(suppressWarnings(as.integer(gsub("\\D","", levs))))]  # numeric order
+df_long_merged[["SOUP ID"]] <- factor(ids_norm, levels = levs, ordered = TRUE)
+
+# df_colonization: ensure ID_clean has the same normalized format
+if (!"ID_clean" %in% names(df_colonization)) {
+  df_colonization$ID_clean <- norm_soup_id(df_colonization$SOUP_Seedling_ID)
+} else {
+  df_colonization$ID_clean <- norm_soup_id(df_colonization$ID_clean)
+}
+```
+
+Set variable type
+```{r}
+library(dplyr)
+
+# Convert all character columns -> factor (recommended)
+df_long_merged <- df_long_merged %>%
+  dplyr::mutate(dplyr::across(where(is.character), ~ factor(.x)))
+
+# Explicitly force these, in case they weren't character
+if ("box_unit" %in% names(df_long_merged))
+  df_long_merged$box_unit <- factor(df_long_merged$box_unit)
+
+if ("temperature box" %in% names(df_long_merged))
+  df_long_merged[["temperature box"]] <- factor(df_long_merged[["temperature box"]])
+
+if ("temperature_box" %in% names(df_long_merged))
+  df_long_merged$temperature_box <- factor(df_long_merged$temperature_box)
+
+df_long_merged$Box_unit <- as.factor(df_long_merged$Box_unit)
+df_long_merged$Obs <- as.factor(df_long_merged$Obs)
+str(df_long_merged)
+
+df_long_merged <- df_long_merged %>%
+  filter(Date != as.Date("2025-03-10"))
+```
+Scatter Plot with Jitter
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# 0) Add Day index (0 = earliest date present in df_long_merged)
+min_day <- min(df_long_merged$Date, na.rm = TRUE)
+df_with_day <- df_long_merged %>%
+  dplyr::mutate(Day = as.integer(Date - min_day))
+
+# 1) One jitter point per SOUP ID × Day × treatment × diversity (mean of its samples)
+id_means <- df_with_day %>%
+  dplyr::group_by(Day, `SOUP ID`, Temperature_box, Diversity_Class) %>%
+  dplyr::summarise(mean_id = mean(FvFm, na.rm = TRUE), .groups = "drop")
+
+# 2) Treatment mean per Day × treatment × diversity (for line + mean dots)
+means_df <- id_means %>%
+  dplyr::group_by(Day, Temperature_box, Diversity_Class) %>%
+  dplyr::summarise(mean_FvFm = mean(mean_id, na.rm = TRUE), .groups = "drop")
+
+unique_days <- sort(unique(df_with_day$Day))
+
+ggplot() +
+  # jittered per-ID daily means
+  geom_jitter(
+    data = id_means,
+    aes(x = Day, y = mean_id, color = Temperature_box),
+    width = 0.25, height = 0, alpha = 0.3, size = 1.8
+  ) +
+  # treatment mean line across days
+  geom_line(
+    data = means_df,
+    aes(x = Day, y = mean_FvFm, color = Temperature_box, group = Temperature_box),
+    linewidth = 1
+  ) +
+  # treatment mean dots
+  geom_point(
+    data = means_df,
+    aes(x = Day, y = mean_FvFm, color = Temperature_box),
+    size = 2.6
+  ) +
+  facet_wrap(~ Diversity_Class) +
+  scale_x_continuous(
+    "Day (start = 0)",
+    breaks = unique_days,
+    labels = unique_days,
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  scale_y_continuous("Fv/Fm") +
+  labs(
+    title = "Fv/Fm over Time of Each Douglas Fir Diversity Class During Temperature Treatments",
+    color = "Temperature box"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+
+
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# 0) Add Day index (0 = earliest date in df_long_merged)
+min_day <- min(df_long_merged$Date, na.rm = TRUE)
+df_with_day <- df_long_merged %>%
+  dplyr::mutate(Day = as.integer(Date - min_day))
+
+# 1) One datum per SOUP ID × Day × treatment × diversity (mean of raw Fv/Fm)
+id_means <- df_with_day %>%
+  dplyr::group_by(Day, `SOUP ID`, Temperature_box, Diversity_Class) %>%
+  dplyr::summarise(mean_id = mean(FvFm, na.rm = TRUE), .groups = "drop")
+
+# 2) Boxplot + jitter (black outline), faceted by Diversity_Class
+ggplot(id_means, aes(x = factor(Day), y = mean_id, fill = Temperature_box)) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.7, outlier.alpha = 0.35) +
+  geom_jitter(
+    aes(fill = Temperature_box),
+    shape = 21,                   # fillable point
+    color = "black",              # black outline
+    stroke = 0.4,                 # outline thickness
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    size = 1.6,
+    alpha = 0.55,
+    show.legend = FALSE
+  ) +
+  facet_wrap(~ Diversity_Class) +
+  scale_x_discrete("Day (start = 0)") +
+  scale_y_continuous("Fv/Fm") +
+  labs(
+    title = "Fv/Fm over Time of Each Douglas Fir Diversity Class During Temperature Treatments",
+    fill = "Temperature box"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+
+
+```
+
+Exploring Colonization data, missing 6 plants????
+11, 15, 26, 72, 90, 114
+```{r}
+library(dplyr)
+library(stringr)
+library(lubridate)
+
+# --- Normalizer -> "SOUP###"
+norm_soup_id <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  x <- gsub("[^A-Z0-9]", "", x)
+  ifelse(grepl("^[0-9]+$", x),
+         sprintf("SOUP%03d", as.integer(x)),
+         ifelse(grepl("^SOUP\\d+$", x),
+                sprintf("SOUP%03d", as.integer(sub("^SOUP", "", x))),
+                x))
+}
+
+# --- df_colonization: clean IDs + parse date (DDMMYY -> Date)
+df_colonization_clean <- df_colonization %>%
+  mutate(
+    ID_clean = norm_soup_id(`SOUP_Seedling_ID`),
+    # "280725" -> 2025-07-28 (dmy handles 2-digit year as 20YY)
+    Date = suppressWarnings(dmy(sprintf("%06d", `Date..DDMMYY.`)))
+  )
+
+# --- df_id: build unique key table (keep all columns)
+id_col <- if ("Seedling_ID" %in% names(df_id)) {
+  "Seedling_ID"
+} else {
+  cand <- grep("(?i)seedling.*id|soup.*id|soup.*plant|plant.*id",
+               names(df_id), value = TRUE)
+  stopifnot(length(cand) > 0); cand[1]
+}
+
+df_id_keys <- df_id %>%
+  mutate(ID_clean = norm_soup_id(.data[[id_col]])) %>%
+  filter(!is.na(ID_clean), ID_clean != "") %>%
+  distinct(ID_clean, .keep_all = TRUE)
+
+# --- Set comparisons
+ids_colon <- unique(df_colonization_clean$ID_clean)
+ids_id    <- unique(df_id_keys$ID_clean)
+
+common_ids        <- intersect(ids_id, ids_colon)
+only_in_colon     <- setdiff(ids_colon, ids_id)    # in colonization but NOT in df_id
+only_in_df_id     <- setdiff(ids_id, ids_colon)    # in df_id but NOT in colonization
+
+presence_table <- tibble(
+  ID = union(ids_id, ids_colon),
+  in_df_id = ID %in% ids_id,
+  in_colonization = ID %in% ids_colon
+) %>% arrange(ID)
+
+# --- Details for mismatches
+missing_in_df_id_detail <- df_colonization_clean %>%
+  filter(ID_clean %in% only_in_colon) %>%
+  arrange(ID_clean)
+
+missing_in_colon_detail <- df_id_keys %>%
+  filter(ID_clean %in% only_in_df_id) %>%
+  arrange(ID_clean)
+
+# --- Join df_id metadata onto the colonization table
+df_colonization_joined <- df_colonization_clean %>%
+  left_join(df_id_keys, by = "ID_clean")
+
+# Quick peeks (uncomment if you want to view):
+common_ids
+only_in_colon
+only_in_df_id
+presence_table
+head(missing_in_df_id_detail)
+head(missing_in_colon_detail)
+str(df_colonization_joined)
+
+```
+Colonization Status
+```{r}
+df_colonization <- df_colonization %>%
+  mutate(Colonization = factor(ifelse(`Colonized.Root.Tips` > 0, "True", "False"),
+                               levels = c("False","True")))
+
+```
+
+Merging colonization with ID
+```{r}
+library(dplyr)
+library(stringr)
+
+# Normalizer -> "SOUP###"
+norm_soup_id <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  x <- gsub("[^A-Z0-9]", "", x)
+  ifelse(grepl("^[0-9]+$", x),
+         sprintf("SOUP%03d", as.integer(x)),
+         ifelse(grepl("^SOUP\\d+$", x),
+                sprintf("SOUP%03d", as.integer(sub("^SOUP", "", x))),
+                x))
+}
+
+# Build a unique ID -> Diversity_Class map from df_id
+levels_div <- if (is.factor(df_id$Diversity_Class)) levels(df_id$Diversity_Class) else unique(df_id$Diversity_Class)
+div_map <- df_id %>%
+  transmute(ID_clean = norm_soup_id(Seedling_ID),
+            Diversity_Class = as.character(Diversity_Class)) %>%
+  filter(!is.na(ID_clean), ID_clean != "") %>%
+  distinct(ID_clean, .keep_all = TRUE)
+
+# ---- Option A: merge onto df_colonization (raw) ----
+df_colonization <- df_colonization %>%
+  mutate(ID_clean = norm_soup_id(SOUP_Seedling_ID)) %>%
+  left_join(div_map, by = "ID_clean") %>%
+  mutate(Diversity_Class = factor(Diversity_Class, levels = levels_div))
+
+# (keeps your Colonization = TRUE/FALSE column if you already added it)
+
+# ---- Option B: if you’re working with df_colonization_clean instead ----
+# df_colonization_clean <- df_colonization_clean %>%
+#   mutate(ID_clean = if (!"ID_clean" %in% names(.)) norm_soup_id(SOUP_Seedling_ID) else ID_clean) %>%
+#   left_join(div_map, by = "ID_clean") %>%
+#   mutate(Diversity_Class = factor(Diversity_Class, levels = levels_div))
+
+
+```
+
+Figuring out contamination and false positive colonization:
+Four False Negative: 118, 3, 121, 2
+Four False Positive: 44, 112, 68, 42
+```{r}
+## --- Simple rule check on df_colonization ---
+
+# 0) Make sure Colonization is logical (from counts), and parse Date for convenience
+df_colonization$Colonization <- df_colonization$Colonized.Root.Tips > 0
+df_colonization$Date <- suppressWarnings(lubridate::dmy(sprintf("%06d", df_colonization$Date..DDMMYY.)))
+
+# 1) Normalize Diversity_Class text and test for "None"
+div_txt <- tolower(trimws(as.character(df_colonization$Diversity_Class)))
+div_is_none <- div_txt == "none"
+
+# 2) Expected colonization by your rule
+df_colonization$Expected_Colonization <- !div_is_none
+df_colonization$Rule <- ifelse(div_is_none,
+                               "Diversity None → expect FALSE",
+                               "Diversity not-None → expect TRUE")
+
+# 3) Flag mismatches
+df_colonization$Mismatch <- df_colonization$Colonization != df_colonization$Expected_Colonization
+
+# 4) Extract the two specific mismatch sets you asked for
+#    A) Diversity None but Colonization TRUE  (should be FALSE)
+df_colonization_None_should_be_FALSE_but_TRUE <-
+  df_colonization[ div_is_none & df_colonization$Colonization, , drop = FALSE]
+
+#    B) Diversity not-None but Colonization FALSE (should be TRUE)
+df_colonization_NotNone_should_be_TRUE_but_FALSE <-
+  df_colonization[ !div_is_none & !df_colonization$Colonization, , drop = FALSE]
+
+# 5) (Optional) All mismatches with a label
+df_colonization_mismatches <- rbind(
+  transform(df_colonization_None_should_be_FALSE_but_TRUE,
+            mismatch_type = "None→FALSE expected, got TRUE"),
+  transform(df_colonization_NotNone_should_be_TRUE_but_FALSE,
+            mismatch_type = "Not-None→TRUE expected, got FALSE")
+)
+
+head(df_colonization_mismatches)
+
+```
+
+Relabel False Positive and remove False Negative
+```{r}
+## --- Build ID sets from df_colonization -----------------------------
+
+# Ensure Colonization is logical (TRUE if any colonized tips)
+df_colonization$Colonization <- df_colonization$Colonized.Root.Tips > 0
+
+# Diversity None vs Not-None
+div_txt <- tolower(trimws(as.character(df_colonization$Diversity_Class)))
+is_none <- div_txt == "none"
+
+# IDs to DROP: Diversity None but Colonization TRUE  (None→FALSE expected, got TRUE)
+ids_drop <- unique(df_colonization$ID_clean[ is_none &  df_colonization$Colonization ])
+
+# IDs to RELABEL to "None": Diversity NOT-None but Colonization FALSE (Not-None→TRUE expected, got FALSE)
+ids_relabel <- unique(df_colonization$ID_clean[ !is_none & !df_colonization$Colonization ])
+
+## --- Apply to df_long_merged ---------------------------------------
+
+# Work with character IDs for matching
+ids_long <- as.character(df_long_merged[["SOUP ID"]])
+
+# 1) DROP rows for ids_drop
+keep_mask <- !(ids_long %in% ids_drop)
+n_dropped <- sum(!keep_mask)
+df_long_merged <- df_long_merged[keep_mask, , drop = FALSE]
+
+# 2) RELABEL Diversity_Class to "None" for ids_relabel
+if (is.factor(df_long_merged$Diversity_Class) && !"None" %in% levels(df_long_merged$Diversity_Class)) {
+  levels(df_long_merged$Diversity_Class) <- c(levels(df_long_merged$Diversity_Class), "None")
+}
+relabel_mask <- ids_long[keep_mask] %in% ids_relabel
+n_relabelled <- sum(relabel_mask)
+df_long_merged$Diversity_Class[relabel_mask] <- "None"
+
+# Clean up factor levels
+df_long_merged <- droplevels(df_long_merged)
+
+# (Optional) quick report
+message("Removed rows: ", n_dropped, " | Relabelled to 'None': ", n_relabelled)
+
+```
+
+
+Graph again
+Scatter Plot with Jitter
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# 0) Add Day index (0 = earliest date present in df_long_merged)
+min_day <- min(df_long_merged$Date, na.rm = TRUE)
+df_with_day <- df_long_merged %>%
+  dplyr::mutate(Day = as.integer(Date - min_day))
+
+# 1) One jitter point per SOUP ID × Day × treatment × diversity (mean of its samples)
+id_means <- df_with_day %>%
+  dplyr::group_by(Day, `SOUP ID`, Temperature_box, Diversity_Class) %>%
+  dplyr::summarise(mean_id = mean(FvFm, na.rm = TRUE), .groups = "drop")
+
+# 2) Treatment mean per Day × treatment × diversity (for line + mean dots)
+means_df <- id_means %>%
+  dplyr::group_by(Day, Temperature_box, Diversity_Class) %>%
+  dplyr::summarise(mean_FvFm = mean(mean_id, na.rm = TRUE), .groups = "drop")
+
+unique_days <- sort(unique(df_with_day$Day))
+
+Sukuna <-ggplot() +
+  # jittered per-ID daily means
+  geom_jitter(
+    data = id_means,
+    aes(x = Day, y = mean_id, color = Temperature_box),
+    width = 0.25, height = 0, alpha = 0.3, size = 1.8
+  ) +
+  # treatment mean line across days
+  geom_line(
+    data = means_df,
+    aes(x = Day, y = mean_FvFm, color = Temperature_box, group = Temperature_box),
+    linewidth = 1
+  ) +
+  # treatment mean dots
+  geom_point(
+    data = means_df,
+    aes(x = Day, y = mean_FvFm, color = Temperature_box),
+    size = 2.6
+  ) +
+  facet_wrap(~ Diversity_Class) +
+  scale_x_continuous(
+    "Day (start = 0)",
+    breaks = unique_days,
+    labels = unique_days,
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  scale_y_continuous("Fv/Fm") +
+  labs(
+    title = "Fv/Fm over Time of Each Douglas Fir Diversity Class During Temperature Treatments",
+    color = "Temperature box"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+
+```
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# 0) Add Day index (0 = earliest date in df_long_merged)
+min_day <- min(df_long_merged$Date, na.rm = TRUE)
+df_with_day <- df_long_merged %>%
+  dplyr::mutate(Day = as.integer(Date - min_day))
+
+# 1) One datum per SOUP ID × Day × treatment × diversity (mean of raw Fv/Fm)
+id_means <- df_with_day %>%
+  dplyr::group_by(Day, `SOUP ID`, Temperature_box, Diversity_Class) %>%
+  dplyr::summarise(mean_id = mean(FvFm, na.rm = TRUE), .groups = "drop")
+
+# 2) Boxplot + jitter (black outline), faceted by Diversity_Class
+Douma <-ggplot(id_means, aes(x = factor(Day), y = mean_id, fill = Temperature_box)) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.7, outlier.alpha = 0.35) +
+  geom_jitter(
+    aes(fill = Temperature_box),
+    shape = 21,                   # fillable point
+    color = "black",              # black outline
+    stroke = 0.4,                 # outline thickness
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    size = 1.6,
+    alpha = 0.55,
+    show.legend = FALSE
+  ) +
+  facet_wrap(~ Diversity_Class) +
+  scale_x_discrete("Day (start = 0)") +
+  scale_y_continuous("Fv/Fm") +
+  labs(
+    title = "Fv/Fm over Time of Each Douglas Fir Diversity Class During Temperature Treatments",
+    fill = "Temperature box"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+
+```
+Colonization Percentage for Each Diversity Class (no filter for false postive/negative)
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# % colonization per seedling (averages if a seedling appears more than once)
+seedling_pct <- df_colonization %>%
+  dplyr::mutate(
+    total_tips = Uncolonized.Root.Tips + Colonized.Root.Tips,
+    pct_colon  = dplyr::if_else(total_tips > 0, 100 * Colonized.Root.Tips / total_tips, NA_real_)
+  ) %>%
+  dplyr::group_by(ID_clean, Diversity_Class) %>%
+  dplyr::summarise(pct_colon = mean(pct_colon, na.rm = TRUE), .groups = "drop")
+
+ggplot2::ggplot(seedling_pct, ggplot2::aes(x = Diversity_Class, y = pct_colon, fill = Diversity_Class)) +
+  ggplot2::geom_boxplot(width = 0.7, outlier.alpha = 0.4, show.legend = FALSE) +
+  ggplot2::scale_y_continuous("Percent colonization",
+                              limits = c(0, 100),
+                              breaks = seq(0, 100, 20),
+                              labels = function(x) paste0(x, "%")) +
+  ggplot2::labs(
+    title = "Percent Root Colonization by Diversity Class (per seedling)",
+    x = "Diversity Class"
+  ) +
+  ggplot2::theme_minimal(base_size = 12)
+
+```
+With outlier highlighted
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+library(dplyr)
+
+## 1) % colonization per seedling (averaging if repeated)
+seedling_pct <- df_colonization %>%
+  mutate(
+    total_tips = Uncolonized.Root.Tips + Colonized.Root.Tips,
+    pct_colon  = if_else(total_tips > 0, 100 * Colonized.Root.Tips / total_tips, NA_real_)
+  ) %>%
+  group_by(ID_clean, Diversity_Class) %>%
+  summarise(pct_colon = mean(pct_colon, na.rm = TRUE), .groups = "drop")
+
+## 2) Outliers by IQR rule within each Diversity_Class
+bounds <- seedling_pct %>%
+  group_by(Diversity_Class) %>%
+  summarise(
+    Q1 = quantile(pct_colon, 0.25, na.rm = TRUE),
+    Q3 = quantile(pct_colon, 0.75, na.rm = TRUE),
+    IQR = IQR(pct_colon, na.rm = TRUE),
+    lower = Q1 - 1.5 * IQR,
+    upper = Q3 + 1.5 * IQR,
+    .groups = "drop"
+  )
+
+outliers <- seedling_pct %>%
+  left_join(bounds, by = "Diversity_Class") %>%
+  mutate(is_outlier = pct_colon < lower | pct_colon > upper) %>%
+  filter(is_outlier) %>%
+  select(ID_clean, Diversity_Class, pct_colon)
+
+## 3) Last-available Fv/Fm and treatment per seedling (from df_long_merged)
+# For each seedling, keep its rows on its own last sampled date
+last_per_id <- df_long_merged %>%
+  mutate(SOUP_ID_chr = as.character(`SOUP ID`)) %>%
+  group_by(SOUP_ID_chr) %>%
+  filter(Date == max(Date, na.rm = TRUE)) %>%
+  ungroup() %>%
+  group_by(SOUP_ID_chr, Temperature_box, Date) %>%
+  summarise(
+    n = n(),
+    FvFm_last_mean = mean(FvFm, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# If multiple treatments on that last date, pick the one with the most rows; tie-break by higher mean
+last_choice <- last_per_id %>%
+  group_by(SOUP_ID_chr) %>%
+  arrange(desc(n), desc(FvFm_last_mean)) %>%
+  slice(1) %>%
+  ungroup() %>%
+  rename(
+    ID_clean      = SOUP_ID_chr,
+    Last_Date     = Date,
+    Treatment_last = Temperature_box
+  )
+
+## 4) Outliers with last-date Fv/Fm and treatment
+outliers_with_last <- outliers %>%
+  mutate(ID_clean = as.character(ID_clean)) %>%
+  left_join(last_choice, by = "ID_clean") %>%
+  arrange(Diversity_Class, ID_clean)
+
+# Inspect:
+# outliers_with_last
+
+# View the table of flagged outliers + last-week Fv/Fm and treatment:
+# outliers_with_last
+
+## 4) (Optional) Re-draw the boxplot and highlight outliers in red
+ggplot(seedling_pct, aes(Diversity_Class, pct_colon, fill = Diversity_Class)) +
+  geom_boxplot(width = 0.7, outlier.shape = NA, show.legend = FALSE) +
+  geom_jitter(
+    data = seedling_tagged,
+    aes(color = is_outlier),
+    width = 0.15, height = 0, size = 1.8, alpha = 0.6, show.legend = FALSE
+  ) +
+  scale_color_manual(values = c(`FALSE` = "grey35", `TRUE` = "red3")) +
+  scale_y_continuous("Percent colonization", limits = c(0, 100),
+                     breaks = seq(0, 100, 20), labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Percent Root Colonization by Diversity Class (per seedling)",
+    subtitle = paste0("Outliers highlighted; see `outliers_with_last` for Fv/Fm @ ",
+                      format(last_date, "%b %d, %Y"), " and treatment")
+  ) +
+  theme_minimal(base_size = 12)
+
+```
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# If you have ggrepel, labels will be much clearer:
+# install.packages("ggrepel")
+suppressWarnings({
+  has_ggrepel <- requireNamespace("ggrepel", quietly = TRUE)
+})
+
+# 1) % colonization per seedling (averaging if repeated)
+seedling_pct <- df_colonization %>%
+  dplyr::mutate(
+    total_tips = Uncolonized.Root.Tips + Colonized.Root.Tips,
+    pct_colon  = dplyr::if_else(total_tips > 0, 100 * Colonized.Root.Tips / total_tips, NA_real_)
+  ) %>%
+  dplyr::group_by(ID_clean, Diversity_Class) %>%
+  dplyr::summarise(pct_colon = mean(pct_colon, na.rm = TRUE), .groups = "drop")
+
+# 2) Outliers (1.5 * IQR) within each Diversity_Class
+bounds <- seedling_pct %>%
+  dplyr::group_by(Diversity_Class) %>%
+  dplyr::summarise(
+    Q1 = quantile(pct_colon, 0.25, na.rm = TRUE),
+    Q3 = quantile(pct_colon, 0.75, na.rm = TRUE),
+    IQR = IQR(pct_colon, na.rm = TRUE),
+    lower = Q1 - 1.5 * IQR,
+    upper = Q3 + 1.5 * IQR,
+    .groups = "drop"
+  )
+
+outliers <- seedling_pct %>%
+  dplyr::left_join(bounds, by = "Diversity_Class") %>%
+  dplyr::filter(pct_colon < lower | pct_colon > upper) %>%
+  dplyr::select(ID_clean, Diversity_Class, pct_colon)
+
+# 3) For each outlier ID, get its *own* last sampled date in df_long_merged,
+#    then mean Fv/Fm and treatment (break ties by n, then higher mean)
+last_per_id <- df_long_merged %>%
+  dplyr::mutate(SOUP_ID_chr = as.character(`SOUP ID`)) %>%
+  dplyr::group_by(SOUP_ID_chr) %>%
+  dplyr::filter(Date == max(Date, na.rm = TRUE)) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(SOUP_ID_chr, Temperature_box, Date) %>%
+  dplyr::summarise(n = dplyr::n(),
+                   FvFm_last_mean = mean(FvFm, na.rm = TRUE),
+                   .groups = "drop")
+
+last_choice <- last_per_id %>%
+  dplyr::group_by(SOUP_ID_chr) %>%
+  dplyr::arrange(dplyr::desc(n), dplyr::desc(FvFm_last_mean)) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup() %>%
+  dplyr::rename(
+    ID_clean       = SOUP_ID_chr,
+    Last_Date      = Date,
+    Treatment_last = Temperature_box
+  )
+
+# 4) Outliers + last-date Fv/Fm + treatment + label text
+outliers_with_last <- outliers %>%
+  dplyr::mutate(ID_clean = as.character(ID_clean)) %>%
+  dplyr::left_join(last_choice, by = "ID_clean") %>%
+  dplyr::mutate(
+    label = ifelse(is.na(FvFm_last_mean),
+                   "no FvFm",
+                   paste0("FvFm ", sprintf("%.3f", FvFm_last_mean), " • ", Treatment_last))
+  )
+
+# Align factor levels to the plotting data so facets/axes match
+outliers_with_last$Diversity_Class <- factor(
+  as.character(outliers_with_last$Diversity_Class),
+  levels = levels(seedling_pct$Diversity_Class)
+)
+
+# 5) Boxplot with jitter; outliers labeled with last Fv/Fm and treatment
+p <- ggplot(seedling_pct, aes(Diversity_Class, pct_colon, fill = Diversity_Class)) +
+  geom_boxplot(width = 0.7, outlier.shape = NA, show.legend = FALSE) +
+  # regular points (black outline, hollow)
+  geom_jitter(shape = 21, color = "black", stroke = 0.4, fill = "white",
+              width = 0.15, height = 0, size = 1.8, alpha = 0.5, show.legend = FALSE) +
+  # outlier points (red) for visibility under labels
+  geom_point(data = outliers_with_last, aes(Diversity_Class, pct_colon),
+             color = "red3", size = 2.2, inherit.aes = FALSE)
+
+# Labels: use ggrepel if available, otherwise geom_text
+if (has_ggrepel) {
+  p <- p + ggrepel::geom_label_repel(
+    data = outliers_with_last,
+    aes(x = Diversity_Class, y = pct_colon, label = label),
+    min.segment.length = 0,
+    size = 3.2,
+    color = "black",
+    fill = "white",
+    label.size = 0.2,
+    seed = 123,
+    box.padding = 0.25,
+    point.padding = 0.2,
+    max.overlaps = Inf,
+    inherit.aes = FALSE
+  )
+} else {
+  p <- p + geom_label(
+    data = outliers_with_last,
+    aes(x = Diversity_Class, y = pct_colon, label = label),
+    size = 3.2,
+    color = "black",
+    fill = "white",
+    label.size = 0.2,
+    inherit.aes = FALSE
+  )
+}
+
+p +
+  scale_y_continuous("Percent colonization",
+                     limits = c(0, 100),
+                     breaks = seq(0, 100, 20),
+                     labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Percent Root Colonization by Diversity Class (per seedling)",
+    subtitle = "Outliers labeled with last available Fv/Fm and treatment"
+  ) +
+  theme_minimal(base_size = 12)
+
+```
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# --- 1) Percent colonization per seedling (averaged if repeated)
+seedling_pct <- df_colonization %>%
+  dplyr::mutate(
+    total_tips = Uncolonized.Root.Tips + Colonized.Root.Tips,
+    pct_colon  = dplyr::if_else(total_tips > 0, 100 * Colonized.Root.Tips / total_tips, NA_real_)
+  ) %>%
+  dplyr::group_by(ID_clean, Diversity_Class) %>%
+  dplyr::summarise(pct_colon = mean(pct_colon, na.rm = TRUE), .groups = "drop")
+
+# --- 2) Representative temperature per seedling = treatment on that seedling's LAST sampled date
+temp_map <- df_long_merged %>%
+  dplyr::mutate(SOUP_ID_chr = as.character(`SOUP ID`)) %>%
+  dplyr::group_by(SOUP_ID_chr) %>%
+  dplyr::filter(Date == max(Date, na.rm = TRUE)) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(SOUP_ID_chr, Temperature_box) %>%
+  dplyr::summarise(n = dplyr::n(),
+                   FvFm_last_mean = mean(FvFm, na.rm = TRUE),
+                   .groups = "drop") %>%
+  dplyr::group_by(SOUP_ID_chr) %>%
+  dplyr::arrange(dplyr::desc(n), dplyr::desc(FvFm_last_mean)) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup() %>%
+  dplyr::transmute(
+    ID_clean = SOUP_ID_chr,
+    Temperature_box = as.character(Temperature_box)
+  )
+
+# Optional: enforce temperature order
+temp_levels <- c("15","25","Variable")
+temp_map$Temperature_box <- factor(temp_map$Temperature_box,
+                                   levels = temp_levels)
+
+# Join representative temperature onto the per-seedling percent table
+seedling_pct2 <- seedling_pct %>%
+  dplyr::left_join(temp_map, by = "ID_clean") %>%
+  dplyr::mutate(
+    Temperature_box = ifelse(is.na(Temperature_box), "Unknown", as.character(Temperature_box)),
+    Temperature_box = factor(Temperature_box, levels = c(temp_levels, "Unknown"))
+  )
+
+ggplot() +
+  geom_boxplot(
+    data = seedling_pct,
+    aes(x = Diversity_Class, y = pct_colon),
+    width = 0.7, outlier.shape = NA
+  ) +
+  geom_jitter(
+    data = seedling_pct2,
+    aes(x = Diversity_Class, y = pct_colon, fill = Temperature_box),
+    shape = 21, color = "black", stroke = 0.4,
+    position = position_jitterdodge(jitter.width = 0.12, dodge.width = 0.55),
+    size = 1.8, alpha = 0.7
+  ) +
+  scale_fill_manual(
+    values = c("15" = "blue", "25" = "red", "Variable" = "purple", "Unknown" = "grey70"),
+    breaks = c("15", "25", "Variable"),   # legend shows only these three
+    na.value = "grey70"
+  ) +
+  scale_y_continuous("Percent colonization", limits = c(0, 100),
+                     breaks = seq(0, 100, 20),
+                     labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Percent Root Colonization by Diversity Class",
+    subtitle = "Boxes = all seedlings per class; jitter lanes = temperature treatment",
+    x = "Diversity Class",
+    fill = "Temperature box"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# 1) Percent colonization per seedling (averaging if repeated in df_colonization)
+seedling_pct <- df_colonization %>%
+  dplyr::mutate(
+    total_tips = Uncolonized.Root.Tips + Colonized.Root.Tips,
+    pct_colon  = dplyr::if_else(total_tips > 0, 100 * Colonized.Root.Tips / total_tips, NA_real_)
+  ) %>%
+  dplyr::group_by(ID_clean, Diversity_Class) %>%
+  dplyr::summarise(pct_colon = mean(pct_colon, na.rm = TRUE), .groups = "drop")
+
+# 2) Representative treatment + last-date Fv/Fm per seedling (from df_long_merged)
+temp_map <- df_long_merged %>%
+  dplyr::mutate(SOUP_ID_chr = as.character(`SOUP ID`)) %>%
+  dplyr::group_by(SOUP_ID_chr) %>%
+  dplyr::filter(Date == max(Date, na.rm = TRUE)) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(SOUP_ID_chr, Temperature_box) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    FvFm_last_mean = mean(FvFm, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::group_by(SOUP_ID_chr) %>%
+  dplyr::arrange(dplyr::desc(n), dplyr::desc(FvFm_last_mean)) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup() %>%
+  # 🔧 make ID_clean here
+  dplyr::transmute(
+    ID_clean       = SOUP_ID_chr,
+    Temperature_box = as.character(Temperature_box),
+    FvFm_last_mean = FvFm_last_mean
+  )
+
+# Order legend for temperature
+temp_levels <- c("15","25","Variable")
+
+# 3) Join onto seedling % table
+seedling_pct2 <- seedling_pct %>%
+  dplyr::left_join(temp_map, by = "ID_clean") %>%
+  dplyr::mutate(
+    Temperature_box = factor(Temperature_box, levels = temp_levels)
+  )
+
+# (Optional) drop seedlings with missing treatment
+# seedling_pct2 <- dplyr::filter(seedling_pct2, !is.na(Temperature_box))
+
+# desired left-to-right order
+class_order <- c("High", "Medium", "Low", "None")
+
+# relevel in both datasets used by the plot
+seedling_pct$Diversity_Class  <- factor(as.character(seedling_pct$Diversity_Class),
+                                        levels = class_order)
+seedling_pct2$Diversity_Class <- factor(as.character(seedling_pct2$Diversity_Class),
+                                        levels = class_order)
+
+# ...then your ggplot call...
+ggplot() +
+  geom_boxplot(
+    data = seedling_pct,
+    aes(x = Diversity_Class, y = pct_colon),
+    width = 0.7, outlier.shape = NA
+  ) +
+  geom_jitter(
+    data = seedling_pct2,
+    aes(x = Diversity_Class, y = pct_colon,
+        fill = Temperature_box, size = FvFm_last_mean),
+    shape = 21, color = "black", stroke = 0.4,
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.65),
+    alpha = 0.5
+  ) +
+  scale_fill_manual(
+    values = c("15"="blue","25"="red","Variable"="purple"),
+    breaks = c("15","25","Variable")   # omit "Unknown" from legend
+  ) +
+  scale_size_continuous(name = "Fv/Fm (last date)") +
+  guides(size = "none",                    # HIDE size legend
+         fill = guide_legend(title = "Temperature box"))+
+
+  scale_y_continuous("Percent colonization", limits = c(0, 100), breaks = seq(0, 100, 20),
+                     labels = function(x) paste0(x, "%")) +
+  scale_x_discrete(limits = class_order) +   # ensures the order on the axis
+  labs(title = "Percent Root Colonization by Diversity Class",
+       x = "Diversity Class", fill = "Temperature box") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# keep order
+class_order <- c("High","Medium","Low","None")
+seedling_pct$Diversity_Class  <- factor(as.character(seedling_pct$Diversity_Class),  levels = class_order)
+seedling_pct2$Diversity_Class <- factor(as.character(seedling_pct2$Diversity_Class), levels = class_order)
+
+# cap Fv/Fm for sizing (older ggplot: no oob=)
+lower <- 0.55; upper <- 0.90
+seedling_pct2 <- seedling_pct2 %>%
+  mutate(FvFm_plot = pmin(pmax(FvFm_last_mean, lower), upper))
+lab_cls <- seedling_pct2 %>% dplyr::count(Diversity_Class, name = "N")
+y_top <- 104  # a bit above the 100% top
+
+Akaza <- ggplot() +
+  # Faded gray boxes
+  geom_boxplot(
+    data = seedling_pct,
+    aes(Diversity_Class, pct_colon), varwidth = TRUE, outlier.shape = NA,
+    width = 0.65, fill = "grey90", color = "grey50", alpha = 0.7
+  ) +
+  # Jitter: fill = treatment, size = last Fv/Fm, black outline
+  geom_jitter(
+    data = seedling_pct2,
+    aes(Diversity_Class, pct_colon, fill = Temperature_box, size = FvFm_plot),
+    shape = 21, color = "black", stroke = 0.35,
+    position = position_jitterdodge(jitter.width = 0.20, dodge.width = 0.55),
+    alpha = 0.5
+  ) +
+  # Mean marker per treatment, colored by treatment
+  stat_summary(
+    data = seedling_pct2,
+    aes(Diversity_Class, pct_colon,
+        group = Temperature_box,
+        fill  = Temperature_box),     # keep color INSIDE the point
+    fun = mean, geom = "point",
+    position = position_dodge(width = 0.55),
+    shape = 19, size = 2, stroke = 0.6,
+    color = "black",                  # black outline (stroke)
+    show.legend = FALSE               # avoid duplicate legend
+    ) +
+  # Legends and scales
+  scale_fill_manual(
+    values = c("15" = "blue", "25" = "red", "Variable" = "purple"),
+    breaks = c("15","25","Variable"),
+    name   = "Temperature box"
+  ) +
+  scale_size_continuous(
+    name = "Fv/Fm (last date)",
+    range = c(1.8, 5),
+    breaks = c(0.6, 0.7, 0.8, 0.9),
+    limits = c(lower, upper),
+    guide  = "none"   # hide size legend
+  ) +
+  scale_y_continuous(
+    "Percent colonization",
+    limits = c(0, 105), breaks = seq(0, 100, 20),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    title = "Percent Root Colonization by Diversity Class Across Treatments",
+    x = "Diversity Class"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank()
+  )+ geom_text(
+    data = lab_cls,
+    aes(x = Diversity_Class, y = y_top, label = paste0("N=", N)),
+    vjust = 1, size = 3.2
+  )
+
+```
+
+Preparing data for lme
+
+```{r}
+library(dplyr)
+
+# Build the table
+last_fvfm_table <- df_long_merged %>%
+  dplyr::mutate(SOUP_ID_chr = as.character(`SOUP ID`)) %>%
+  # keep only each seedling's own last sampled date
+  dplyr::group_by(SOUP_ID_chr) %>%
+  dplyr::filter(Date == max(Date, na.rm = TRUE)) %>%
+  dplyr::ungroup() %>%
+  # summarize by treatment on that last date
+  dplyr::group_by(SOUP_ID_chr, Temperature_box, Date, Diversity_Class) %>%
+  dplyr::summarise(
+    n                = dplyr::n(),
+    FvFm_last_mean   = mean(FvFm, na.rm = TRUE),
+    FvFm_last_median = stats::median(FvFm, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  # if multiple treatments exist that day, pick the one with most rows, then higher mean
+  dplyr::group_by(SOUP_ID_chr) %>%
+  dplyr::arrange(dplyr::desc(n), dplyr::desc(FvFm_last_mean), .by_group = TRUE) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup() %>%
+  dplyr::rename(
+    ID_clean       = SOUP_ID_chr,
+    Last_Date      = Date,
+    Treatment_last = Temperature_box
+  ) %>%
+  # tidy up
+  dplyr::mutate(
+    FvFm_last_mean   = ifelse(is.nan(FvFm_last_mean), NA_real_, FvFm_last_mean),
+    FvFm_last_median = ifelse(is.nan(FvFm_last_median), NA_real_, FvFm_last_median)
+  ) %>%
+  dplyr::arrange(Diversity_Class, ID_clean)
+
+# peek
+# head(last_fvfm_table)
+
+# Optional: round for display
+last_fvfm_table_display <- last_fvfm_table %>%
+  dplyr::mutate(
+    FvFm_last_mean   = round(FvFm_last_mean, 3),
+    FvFm_last_median = round(FvFm_last_median, 3)
+  )
+
+# View in RStudio:
+# View(last_fvfm_table_display)
+
+# Optional: save to CSV (relative path)
+# dir.create("outputs", showWarnings = FALSE)
+# write.csv(last_fvfm_table_display, file.path("outputs", "last_fvfm_by_seedling.csv"), row.names = FALSE)
+
+```
+
+lme with mix effect percentage colonization ~ diversity class * temperature_box + (1|box_unit)
+```{r}
+# Mixed model with nlme (Gaussian on logit-proportion), plus predictions
+library(dplyr)
+library(nlme)
+library(emmeans)
+
+# --- Build analysis table (one row per seedling) ----------------------
+# percent/prop from counts, + join treatment (last-date) and box unit
+# assumes: df_colonization, df_long_merged, df_id already in memory
+
+# treatment per seedling = treatment on that seedling's *last sampled date*
+temp_map <- df_long_merged %>%
+  mutate(ID_clean = as.character(`SOUP ID`)) %>%
+  group_by(ID_clean) %>% filter(Date == max(Date, na.rm = TRUE)) %>% ungroup() %>%
+  count(ID_clean, Temperature_box, name = "n") %>%
+  group_by(ID_clean) %>% slice_max(n, n = 1, with_ties = FALSE) %>% ungroup() %>%
+  transmute(ID_clean, Temperature_box = factor(as.character(Temperature_box),
+                                               levels = c("15","25","Variable")))
+
+box_map <- df_id %>%
+  transmute(ID_clean = as.character(Seedling_ID),
+            Box_unit  = factor(Box_unit))
+
+dat_ml <- df_colonization %>%
+  mutate(total = Uncolonized.Root.Tips + Colonized.Root.Tips) %>%
+  filter(total > 0) %>%
+  transmute(
+    ID_clean          = as.character(ID_clean),
+    Diversity_Class   = factor(as.character(Diversity_Class),
+                               levels = c("High","Medium","Low","None")),
+    total,
+    colonized         = Colonized.Root.Tips
+  ) %>%
+  left_join(temp_map, by = "ID_clean") %>%
+  left_join(box_map,  by = "ID_clean") %>%
+  filter(!is.na(Temperature_box), !is.na(Box_unit)) %>%
+  mutate(
+    prop       = colonized / total,
+    # Smithson–Verkuilen adjustment to avoid 0/1 on logit
+    prop_adj   = (prop * (total - 1) + 0.5) / total,
+    logit_prop = qlogis(prop_adj)
+  )
+
+# --- Fit LME ----------------------------------------------------------
+m_lme <- lme(
+  logit_prop ~ Diversity_Class * Temperature_box,
+  random  = ~ 1 | Box_unit,
+  data    = dat_ml,
+  weights = varFixed(~ 1 / total),   # downweight small n
+  na.action = na.omit,
+  control = lmeControl(opt = "optim")
+)
+
+summary(m_lme)
+anova(m_lme)   # F-tests for fixed effects
+
+# --- Marginal means (back to % colonization) --------------------------
+# emmeans on your lme fit (already computed as `m_lme`)
+emm <- emmeans(m_lme, ~ Diversity_Class * Temperature_box, tran = "logit")
+
+# Get CIs on the response scale; names are consistently lower.CL / upper.CL
+emm_ci <- as.data.frame(confint(emm, type = "response"))
+
+# The response column can be called "response" or "prob" depending on version/link
+resp_col <- intersect(c("response", "prob", "rate", "emmean"), names(emm_ci))[1]
+
+emm_pct <- emm_ci %>%
+  transmute(
+    Diversity_Class, Temperature_box,
+    pct = 100 * .data[[resp_col]],
+    lcl = 100 * lower.CL,
+    ucl = 100 * upper.CL
+  )
+
+emm_pct
+# --- Compact prediction grid (population-level, no random effects) ----
+grid <- expand.grid(
+  Diversity_Class = levels(dat_ml$Diversity_Class),
+  Temperature_box = levels(dat_ml$Temperature_box)
+)
+grid$pred_logit <- predict(m_lme, newdata = grid, level = 0)
+grid$pred_pct   <- 100 * plogis(grid$pred_logit)
+grid[order(grid$Diversity_Class, grid$Temperature_box), ]
+
+
+
+```
+```{r}
+# 2A) Pairwise differences among Diversity *within each* Temperature (Tukey)
+div_within_temp <- pairs(emmeans(emm, ~ Diversity_Class | Temperature_box),
+                         adjust = "tukey", type = "response")
+div_within_temp
+
+# 2B) Pairwise differences among Temperature *within each* Diversity (Tukey)
+temp_within_div <- pairs(emmeans(emm, ~ Temperature_box | Diversity_Class),
+                         adjust = "tukey", type = "response")
+temp_within_div
+
+# 3) Compact Letters Display (CLD) on response scale (percent) for quick readout
+# You may need: install.packages("multcomp") for nicer letter spacing
+cld_div_within_temp <- cld(emmeans(emm, ~ Diversity_Class | Temperature_box),
+                           adjust = "tukey", type = "response", Letters = letters)
+cld_div_within_temp %>%
+  as.data.frame() %>%
+  transmute(
+    Temperature_box,
+    Diversity_Class,
+    pct = 100 * response,
+    lower = 100 * lower.CL,
+    upper = 100 * upper.CL,
+    .group
+  )
+
+cld_temp_within_div <- cld(emmeans(emm, ~ Temperature_box | Diversity_Class),
+                           adjust = "tukey", type = "response", Letters = letters)
+cld_temp_within_div %>%
+  as.data.frame() %>%
+  transmute(
+    Diversity_Class,
+    Temperature_box,
+    pct = 100 * response,
+    lower = 100 * lower.CL,
+    upper = 100 * upper.CL,
+    .group
+  )
+
+# 4) If you also want a single table of cell means + CIs on percent scale:
+emm_ci <- as.data.frame(confint(emm, type = "response"))
+resp_col <- intersect(c("response","prob","rate","emmean"), names(emm_ci))[1]
+emm_pct <- emm_ci %>%
+  transmute(
+    Diversity_Class, Temperature_box,
+    pct = 100 * .data[[resp_col]],
+    lcl = 100 * lower.CL,
+    ucl = 100 * upper.CL
+  )
+emm_pct
+```
+
+simplified model
+```{r}
+library(nlme)
+library(emmeans)
+
+# Start from your dat_ml and weights setup used in m_lme
+
+# 1) Fit with ML for model comparisons
+m_full_ml <- update(m_lme, method = "ML")  # same formula as your current model
+
+# 2) Remove interaction
+m_no_int_ml <- update(m_full_ml, . ~ Diversity_Class + Temperature_box)
+
+anova(m_full_ml, m_no_int_ml)  # if p > .05, drop the interaction
+
+# 3) If interaction dropped, test removing Temperature_box too
+m_div_only_ml <- update(m_no_int_ml, . ~ Diversity_Class)
+
+anova(m_no_int_ml, m_div_only_ml)  # if p > .05, drop Temperature_box
+
+# 4) Refit the final chosen model with REML for inference
+# (Likely this is Diversity_Class only)
+m_final <- update(m_div_only_ml, method = "REML")
+summary(m_final)
+anova(m_final)
+
+# 5) Predicted % colonization by Diversity (back-transformed)
+emm_final <- emmeans(m_final, ~ Diversity_Class, tran = "logit")
+summary(emm_final, type = "response")
+
+```
+
+```{r}
+library(emmeans)
+
+emm_final <- emmeans(m_final, ~ Diversity_Class, tran = "logit")
+
+# Tukey-adjusted pairwise differences among diversity classes, reported on % scale
+pairs_div <- pairs(emm_final, adjust = "tukey", type = "response")
+pairs_div
+
+cld_div <- cld(emm_final, adjust = "tukey", type = "response", Letters = letters)
+as.data.frame(cld_div)[, c("Diversity_Class","response","lower.CL","upper.CL",".group")]
+
+tab_div <- summary(emm_final, type = "response") |>
+  as.data.frame() |>
+  transform(
+    pct = round(100 * response, 1),
+    lcl = round(100 * lower.CL, 1),
+    ucl = round(100 * upper.CL, 1)
+  ) |>
+  subset(select = c(Diversity_Class, pct, lcl, ucl))
+tab_div
+
+
+```
+Without using diversity class *broken*
+```{r}
+library(nlme)
+library(emmeans)
+library(dplyr)
+
+# dat_bio should already have: logit_prop, total, Burn_Category, Sterile_Category, Temperature_box
+
+# 1) Fit GLS (no random effect), downweighting seedlings with few tips
+m_gls <- gls(
+  logit_prop ~ Burn_Category * Sterile_Category * Temperature_box,
+  data    = dat_bio,
+  weights = varFixed(~ 1/total),   # optional but recommended
+  method  = "REML"
+)
+
+summary(m_gls)
+anova(m_gls)  # Type I (sequential) tests
+
+# (Optional) Type II/III tests if you prefer:
+# install.packages("car")
+# car::Anova(m_gls, type = 2)  # or type = 3
+
+# 2) Estimated marginal means (back to % colonization) for all 3-way cells
+emm_gls <- emmeans(m_gls, ~ Burn_Category * Sterile_Category * Temperature_box, tran = "logit")
+emm_gls_pct <- summary(emm_gls, type = "response") %>%
+  as.data.frame() %>%
+  transmute(
+    Burn_Category, Sterile_Category, Temperature_box,
+    pct = round(100 * response, 1),
+    lcl = round(100 * lower.CL, 1),
+    ucl = round(100 * upper.CL, 1)
+  )
+emm_gls_pct
+
+# 3) Tukey-adjusted simple effects (on % scale)
+# Temperatures within each Burn x Sterile
+pairs_temp <- pairs(emmeans(emm_gls, ~ Temperature_box | Burn_Category * Sterile_Category),
+                    adjust = "tukey", type = "response")
+pairs_temp
+
+# Burn within each Sterile x Temperature
+pairs_burn <- pairs(emmeans(emm_gls, ~ Burn_Category | Sterile_Category * Temperature_box),
+                    adjust = "tukey", type = "response")
+pairs_burn
+
+# Sterile within each Burn x Temperature
+pairs_ster <- pairs(emmeans(emm_gls, ~ Sterile_Category | Burn_Category * Temperature_box),
+                    adjust = "tukey", type = "response")
+pairs_ster
+
+```
+
+save plots made:
+```{r}
+library(ggplot2)
+
+# Save Akaza plot
+ggsave("Akaza.png", plot = Akaza, width = 6, height = 4, dpi = 300)
+
+# Save Douma plot
+ggsave("Douma.png", plot = Douma, width = 6, height = 4, dpi = 300)
+
+# Save Sukuna plot
+ggsave("Sukuna.png", plot = Sukuna, width = 6, height = 4, dpi = 300)
+
+```
+
