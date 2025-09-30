@@ -1,0 +1,590 @@
+---
+title: "SOUPv1_Analysis_V2"
+author: "Sarif Morningstar"
+date: "2025-09-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r}
+# install.packages(c("readxl","dplyr","stringr","lubridate","janitor","purrr","here"))
+library(readxl)
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(janitor)
+library(purrr)
+library(here)
+
+# --- Robust project paths ---
+# If your project root is the folder that already *is* "Raw Data", use it.
+# Otherwise, append "Raw Data" to the project root.
+root <- here::here()
+data_dir <- if (basename(root) == "Raw Data") root else here::here("Raw Data")
+
+# (Optional) sanity check:
+# message("Project root: ", root)
+# message("Data dir: ", data_dir)
+
+make_header_names <- function(groups, vars, units) {
+  u_fmt <- ifelse(is.na(units) | units == "", "", paste0(" [", units, "]"))
+  nm <- paste0(ifelse(groups == "" | is.na(groups), "UNGROUPED", groups), "__",
+               ifelse(vars == "" | is.na(vars), "unnamed", vars),
+               u_fmt)
+  nm %>%
+    stringr::str_replace_all("\\s+", " ") %>%
+    stringr::str_replace_all("[\\+/]+", "_per_") %>%
+    stringr::str_replace_all("[^A-Za-z0-9_ \\[\\]-]", "_") %>%
+    stringr::str_squish() %>%
+    janitor::make_clean_names(case = "none")
+}
+
+read_licor_excel <- function(path, sheet = 1) {
+  hdr <- readxl::read_excel(path, sheet = sheet, range = cell_limits(c(1,1), c(3, NA)),
+                            col_names = FALSE, .name_repair = "minimal")
+  groups <- as.character(unlist(hdr[1, ]))
+  vars   <- as.character(unlist(hdr[2, ]))
+  units  <- as.character(unlist(hdr[3, ]))
+  new_names <- make_header_names(groups, vars, units)
+
+  dat <- readxl::read_excel(
+    path, sheet = sheet, skip = 3, col_names = new_names,
+    na = c("", "NA")
+  ) %>%
+    dplyr::mutate(across(everything(), ~{
+      if (is.character(.x)) {
+        .x <- stringr::str_squish(.x)
+        .x[.x %in% c("-9999", "-9999.0", "-9999.000")] <- NA_character_
+        .x
+      } else if (is.numeric(.x)) {
+        .x[.x %in% c(-9999, -9999.0, -9999.000)] <- NA_real_
+        .x
+      } else .x
+    }))
+
+  list(data = dat, groups = groups, vars = vars, units = units, names = new_names)
+}
+
+get_first_date <- function(file_path, hdr_vars, cleaned_names, dat) {
+  idx <- which(tolower(hdr_vars) == "date")
+  if (length(idx) >= 1) {
+    v <- dat[[ cleaned_names[idx[1]] ]][1]
+    d <- tryCatch({
+      if (inherits(v, "Date")) v else if (inherits(v, "POSIXt")) as.Date(v) else {
+        if (is.numeric(v)) as.Date(v, origin = "1899-12-30") else {
+          v <- stringr::str_squish(as.character(v))
+          d <- suppressWarnings(lubridate::ymd(v))
+          if (is.na(d)) suppressWarnings(lubridate::ymd(gsub("[^0-9]", "", v))) else d
+        }
+      }
+    }, error = function(e) NA_Date_)
+    if (!is.na(d)) return(as.Date(d))
+  }
+
+  cand <- grep("__Date\\b", cleaned_names, ignore.case = TRUE, value = TRUE)
+  if (length(cand)) {
+    v <- dat[[ cand[1] ]][1]
+    d <- tryCatch({
+      if (inherits(v, "Date")) v else if (inherits(v, "POSIXt")) as.Date(v) else {
+        if (is.numeric(v)) as.Date(v, origin = "1899-12-30") else {
+          v <- stringr::str_squish(as.character(v))
+          d <- suppressWarnings(lubridate::ymd(v))
+          if (is.na(d)) suppressWarnings(lubridate::ymd(gsub("[^0-9]", "", v))) else d
+        }
+      }
+    }, error = function(e) NA_Date_)
+    if (!is.na(d)) return(as.Date(d))
+  }
+
+  fn <- basename(file_path)
+  m <- stringr::str_match(fn, "(20\\d{2})[_-]?(\\d{2})[_-]?(\\d{2})")
+  if (!all(is.na(m))) {
+    y <- as.integer(m[2]); mo <- as.integer(m[3]); da <- as.integer(m[4])
+    d <- suppressWarnings(lubridate::make_date(y, mo, da))
+    if (!is.na(d)) return(d)
+  }
+  m2 <- stringr::str_match(fn, "(20\\d{2})(\\d{2})(\\d{2})")
+  if (!all(is.na(m2))) {
+    y <- as.integer(m2[2]); mo <- as.integer(m2[3]); da <- as.integer(m2[4])
+    d <- suppressWarnings(lubridate::make_date(y, mo, da))
+    if (!is.na(d)) return(d)
+  }
+
+  NA_Date_
+}
+
+# ---- Load all Excel files under data_dir
+files <- list.files(data_dir, pattern = "\\.(xlsx|xls)$", full.names = TRUE)
+
+for (f in files) {
+  x <- read_licor_excel(f, sheet = 1)
+  dat <- x$data
+  d_first <- get_first_date(f, x$vars, x$names, dat)
+
+  if (is.na(d_first)) {
+    nm <- paste0("df_unknown_", tools::file_path_sans_ext(basename(f)))
+    assign(nm, dat, envir = .GlobalEnv)
+    message("Could not determine date for ", basename(f), "; assigning ", nm)
+  } else {
+    df_name <- paste0("df_", format(d_first, "%m%d"))
+    assign(df_name, dat, envir = .GlobalEnv)
+    message("Loaded ", basename(f), " into ", df_name)
+  }
+}
+
+# ---- Load Plant ID (relative to data_dir)
+id_path <- file.path(data_dir, "Plant ID", "Plant ID SOUP - SOUP Chamber Seedling ID assignment.csv")
+if (!file.exists(id_path)) {
+  stop("Plant ID CSV not found at: ", id_path, "\nCheck your project root or folder name.")
+}
+df_id <- read.csv(id_path, stringsAsFactors = FALSE)
+
+# ---- Load Initial Physical (relative to data_dir)
+phys_path <- file.path(data_dir, "Initial Data", "SOUPv1 Initial Physical data.csv")
+if (!file.exists(phys_path)) {
+  stop("Initial Physical CSV not found at: ", phys_path, "\nCheck your project root or folder name.")
+}
+df_initial_physical <- read.csv(phys_path, stringsAsFactors = FALSE)
+
+if (!exists("data_dir")) {
+  root <- here::here()
+  data_dir <- if (basename(root) == "Raw Data") root else here::here("Raw Data")
+}
+
+# End Point Data -> SOUP_Colonization_rate.csv
+end_path <- file.path(data_dir, "End Point Data", "SOUP_Colonization_rate.csv")
+if (!file.exists(end_path)) stop("File not found: ", end_path)
+
+df_colonization <- read.csv(end_path, stringsAsFactors = FALSE)
+
+```
+
+
+Merge data frame after clean up
+```{r}
+library(dplyr)
+library(purrr)
+library(stringr)
+library(lubridate)
+
+# columns to keep
+target_cols <- c("SYS_Date_YYYYMMDD", "USERDEF_Plant_number", "FLUORO_Fv_per_Fm")
+
+# grab every df_#### except df_0310
+df_names <- setdiff(ls(pattern = "^df_\\d{4}$"), "df_0310")
+stopifnot(length(df_names) > 0)
+
+df_long <- purrr::map_dfr(df_names, function(nm) {
+  df <- get(nm, envir = .GlobalEnv)
+
+  # skip frames missing required columns
+  missing <- setdiff(target_cols, names(df))
+  if (length(missing) > 0) {
+    message("Skipping ", nm, " (missing: ", paste(missing, collapse = ", "), ")")
+    return(NULL)
+  }
+
+  # select only the target cols (use namespaced dplyr to avoid masking)
+  dplyr::select(df, dplyr::all_of(target_cols))
+}) %>%
+  # light cleaning + typing
+  dplyr::mutate(
+    SYS_Date_YYYYMMDD    = lubridate::ymd(as.character(SYS_Date_YYYYMMDD)),
+    USERDEF_Plant_number = stringr::str_squish(as.character(USERDEF_Plant_number)),
+    FLUORO_Fv_per_Fm     = suppressWarnings(as.numeric(FLUORO_Fv_per_Fm))
+  ) %>%
+  # drop empty plant ids
+  dplyr::filter(!is.na(USERDEF_Plant_number), USERDEF_Plant_number != "") %>%
+  # stable order, then global observation index
+  dplyr::arrange(SYS_Date_YYYYMMDD, USERDEF_Plant_number) %>%
+  dplyr::mutate(Obs = dplyr::row_number()) %>%
+  dplyr::select(Obs, dplyr::all_of(target_cols))
+
+# peek
+# dplyr::glimpse(df_long)
+# head(df_long)
+
+```
+
+
+Merging column
+```{r}
+library(dplyr)
+library(stringr)
+
+# --- Normalizer -> "SOUP###"
+norm_soup_id <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  x <- gsub("[^A-Z0-9]", "", x)
+  ifelse(grepl("^[0-9]+$", x),
+         sprintf("SOUP%03d", as.integer(x)),
+         ifelse(grepl("^SOUP\\d+$", x),
+                sprintf("SOUP%03d", as.integer(sub("^SOUP", "", x))),
+                x))
+}
+
+# --- Identify the ID column in df_id (fallback if name differs)
+id_col <- if ("Seedling_ID" %in% names(df_id)) {
+  "Seedling_ID"
+} else {
+  cand <- grep("(?i)seedling.*id|soup.*id|soup.*plant|plant.*id", names(df_id), value = TRUE)
+  stopifnot(length(cand) > 0)
+  cand[1]
+}
+
+# --- Build a de-duplicated key table from df_id (keep all other columns)
+df_id_keys <- df_id %>%
+  dplyr::mutate(ID_clean = norm_soup_id(.data[[id_col]])) %>%
+  dplyr::filter(!is.na(ID_clean), ID_clean != "") %>%
+  dplyr::distinct(ID_clean, .keep_all = TRUE)
+
+# we'll want to select these columns (everything from df_id except the helper key)
+id_cols_to_add <- setdiff(names(df_id_keys), "ID_clean")
+
+# --- Merge onto your long frame and rename the three columns
+df_long_merged <- df_long %>%
+  dplyr::mutate(ID_clean = norm_soup_id(USERDEF_Plant_number)) %>%
+  dplyr::left_join(df_id_keys, by = "ID_clean") %>%
+  # put Obs first; rename the three requested columns; then append all df_id columns
+  dplyr::select(
+    Obs,
+    Date    = SYS_Date_YYYYMMDD,
+    `SOUP ID` = USERDEF_Plant_number,
+    FvFm    = FLUORO_Fv_per_Fm,
+    dplyr::all_of(id_cols_to_add)
+  )
+
+# Peek
+# dplyr::glimpse(df_long_merged)
+# head(df_long_merged)
+
+```
+
+Colonization Status
+```{r}
+df_colonization <- df_colonization %>%
+  mutate(Colonization = factor(ifelse(`Colonized.Root.Tips` > 0, "True", "False"),
+                               levels = c("False","True")))
+
+```
+
+Merging colonization with ID
+```{r}
+library(dplyr)
+library(stringr)
+
+# Normalizer -> "SOUP###"
+norm_soup_id <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  x <- gsub("[^A-Z0-9]", "", x)
+  ifelse(grepl("^[0-9]+$", x),
+         sprintf("SOUP%03d", as.integer(x)),
+         ifelse(grepl("^SOUP\\d+$", x),
+                sprintf("SOUP%03d", as.integer(sub("^SOUP", "", x))),
+                x))
+}
+
+# Build a unique ID -> Diversity_Class map from df_id
+levels_div <- if (is.factor(df_id$Diversity_Class)) levels(df_id$Diversity_Class) else unique(df_id$Diversity_Class)
+div_map <- df_id %>%
+  transmute(ID_clean = norm_soup_id(Seedling_ID),
+            Diversity_Class = as.character(Diversity_Class)) %>%
+  filter(!is.na(ID_clean), ID_clean != "") %>%
+  distinct(ID_clean, .keep_all = TRUE)
+
+# ---- Option A: merge onto df_colonization (raw) ----
+df_colonization <- df_colonization %>%
+  mutate(ID_clean = norm_soup_id(SOUP_Seedling_ID)) %>%
+  left_join(div_map, by = "ID_clean") %>%
+  mutate(Diversity_Class = factor(Diversity_Class, levels = levels_div))
+
+# (keeps your Colonization = TRUE/FALSE column if you already added it)
+
+# ---- Option B: if you’re working with df_colonization_clean instead ----
+# df_colonization_clean <- df_colonization_clean %>%
+#   mutate(ID_clean = if (!"ID_clean" %in% names(.)) norm_soup_id(SOUP_Seedling_ID) else ID_clean) %>%
+#   left_join(div_map, by = "ID_clean") %>%
+#   mutate(Diversity_Class = factor(Diversity_Class, levels = levels_div))
+
+
+```
+
+Figuring out contamination and false positive colonization:
+Four False Negative: 118, 3, 121, 2
+Four False Positive: 44, 112, 68, 42
+```{r}
+## --- Simple rule check on df_colonization ---
+
+# 0) Make sure Colonization is logical (from counts), and parse Date for convenience
+df_colonization$Colonization <- df_colonization$Colonized.Root.Tips > 0
+df_colonization$Date <- suppressWarnings(lubridate::dmy(sprintf("%06d", df_colonization$Date..DDMMYY.)))
+
+# 1) Normalize Diversity_Class text and test for "None"
+div_txt <- tolower(trimws(as.character(df_colonization$Diversity_Class)))
+div_is_none <- div_txt == "none"
+
+# 2) Expected colonization by your rule
+df_colonization$Expected_Colonization <- !div_is_none
+df_colonization$Rule <- ifelse(div_is_none,
+                               "Diversity None → expect FALSE",
+                               "Diversity not-None → expect TRUE")
+
+# 3) Flag mismatches
+df_colonization$Mismatch <- df_colonization$Colonization != df_colonization$Expected_Colonization
+
+# 4) Extract the two specific mismatch sets you asked for
+#    A) Diversity None but Colonization TRUE  (should be FALSE)
+df_colonization_None_should_be_FALSE_but_TRUE <-
+  df_colonization[ div_is_none & df_colonization$Colonization, , drop = FALSE]
+
+#    B) Diversity not-None but Colonization FALSE (should be TRUE)
+df_colonization_NotNone_should_be_TRUE_but_FALSE <-
+  df_colonization[ !div_is_none & !df_colonization$Colonization, , drop = FALSE]
+
+# 5) (Optional) All mismatches with a label
+df_colonization_mismatches <- rbind(
+  transform(df_colonization_None_should_be_FALSE_but_TRUE,
+            mismatch_type = "None→FALSE expected, got TRUE"),
+  transform(df_colonization_NotNone_should_be_TRUE_but_FALSE,
+            mismatch_type = "Not-None→TRUE expected, got FALSE")
+)
+
+head(df_colonization_mismatches)
+
+```
+
+Relabel False Positive and remove False Negative
+```{r}
+## --- Build ID sets from df_colonization -----------------------------
+
+# Ensure Colonization is logical (TRUE if any colonized tips)
+df_colonization$Colonization <- df_colonization$Colonized.Root.Tips > 0
+
+# Diversity None vs Not-None
+div_txt <- tolower(trimws(as.character(df_colonization$Diversity_Class)))
+is_none <- div_txt == "none"
+
+# IDs to DROP: Diversity None but Colonization TRUE  (None→FALSE expected, got TRUE)
+ids_drop <- unique(df_colonization$ID_clean[ is_none &  df_colonization$Colonization ])
+
+# IDs to RELABEL to "None": Diversity NOT-None but Colonization FALSE (Not-None→TRUE expected, got FALSE)
+ids_relabel <- unique(df_colonization$ID_clean[ !is_none & !df_colonization$Colonization ])
+
+## --- Apply to df_long_merged ---------------------------------------
+
+# Work with character IDs for matching
+ids_long <- as.character(df_long_merged[["SOUP ID"]])
+
+# 1) DROP rows for ids_drop
+keep_mask <- !(ids_long %in% ids_drop)
+n_dropped <- sum(!keep_mask)
+df_long_merged <- df_long_merged[keep_mask, , drop = FALSE]
+
+# 2) RELABEL Diversity_Class to "None" for ids_relabel
+if (is.factor(df_long_merged$Diversity_Class) && !"None" %in% levels(df_long_merged$Diversity_Class)) {
+  levels(df_long_merged$Diversity_Class) <- c(levels(df_long_merged$Diversity_Class), "None")
+}
+relabel_mask <- ids_long[keep_mask] %in% ids_relabel
+n_relabelled <- sum(relabel_mask)
+df_long_merged$Diversity_Class[relabel_mask] <- "None"
+
+# Clean up factor levels
+df_long_merged <- droplevels(df_long_merged)
+
+# (Optional) quick report
+message("Removed rows: ", n_dropped, " | Relabelled to 'None': ", n_relabelled)
+
+```
+
+
+Last day stratified
+
+
+```{r}
+# --- Second-to-last day stratified ---
+library(dplyr)
+library(ggplot2)
+
+# 0) Add Day index (0 = earliest date)
+min_day <- min(df_long_merged$Date, na.rm = TRUE)
+df_with_day <- df_long_merged %>%
+  dplyr::mutate(Day = as.integer(Date - min_day))
+
+# Get the second-to-last day (requires ≥2 unique days)
+days <- sort(unique(df_with_day$Day[!is.na(df_with_day$Day)]))
+if (length(days) < 2) {
+  stop("Need at least two unique days to compute the second-to-last day.")
+}
+second_last_day <- days[length(days) - 1]
+
+# 1) One datum per Seedling_ID × Day × Temperature × Diversity (mean Fv/Fm)
+seedling_daily <- df_with_day %>%
+  dplyr::group_by(Day, `SOUP ID`, Seedling_ID, Temperature_box, Diversity_Class) %>%
+  dplyr::summarise(mean_seedling = mean(FvFm, na.rm = TRUE), .groups = "drop")
+
+# Keep only the second-to-last day
+seedling_second_last <- seedling_daily %>% dplyr::filter(Day == second_last_day)
+
+# (Optional) keep downstream code unchanged by reusing the same object name:
+seedling_last <- seedling_second_last
+
+
+```
+
+boxplot
+```{r}
+library(dplyr)
+library(ggplot2)
+
+seedling_last <- seedling_last %>%
+  mutate(
+    Temperature_box = factor(Temperature_box, levels = c("15", "Variable", "25")),
+    Diversity_Class = factor(Diversity_Class)
+  )
+
+ggplot(seedling_last, aes(x = Temperature_box, y = mean_seedling, fill = Diversity_Class)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.shape = NA   # removes gray outlier dots
+  ) +
+  geom_point(
+    aes(fill = Diversity_Class),
+    shape = 21,
+    stroke = 0.4,
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    size = 1.6,
+    alpha = 0.55,
+    show.legend = FALSE
+  ) +
+  scale_x_discrete(
+    name   = "Temperature Treatments",
+    labels = c("15" = "15°C",
+               "Variable" = "Variable (15°C ↔ 25°C)",
+               "25" = "25°C")
+  ) +
+  scale_y_continuous("Fv/Fm") +
+  labs(
+    title    = "Last Day Plant Performance of Different Diversity Class",
+    fill     = "Diversity class"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    plot.title      = element_text(face = "bold")
+  )
+
+
+```
+
+```{r}
+# prep
+library(dplyr)
+library(janitor)
+
+# Two-way ANOVA
+fit_aov <- aov(
+  mean_seedling ~ Temperature_box * Diversity_Class,
+  data = seedling_last
+)
+summary(fit_aov)
+
+# Welch-type two-way ANOVA (Welch–James ADF)
+# install.packages("welchADF")  # if not installed
+library(welchADF)
+welch_res <- welchADF.test(
+  mean_seedling ~ Temperature_box * Diversity_Class,
+  data = seedling_last
+)
+welch_res
+
+
+```
+
+
+
+```{r}
+# Requires: fit_aov from your code
+library(emmeans)
+library(dplyr)
+
+# Estimated marginal means of Diversity_Class at each Temperature_box
+emm_div_by_temp <- emmeans(fit_aov, ~ Diversity_Class | Temperature_box)
+
+# Tukey-adjusted pairwise comparisons within each temperature
+aov_pairwise <- pairs(emm_div_by_temp, adjust = "tukey") |>
+  summary(infer = TRUE) |>
+  as.data.frame()
+
+# Optional: compact letter displays (which groups differ) per temperature
+library(multcomp)
+cld_div_by_temp <- multcomp::cld(emm_div_by_temp, Letters = letters, adjust = "tukey")
+
+# Peek
+aov_pairwise %>% arrange(Temperature_box, contrast)
+cld_div_by_temp
+
+```
+
+
+
+
+
+```{r}
+# install.packages("WRS2")   # run once
+library(WRS2)
+library(dplyr)
+library(purrr)
+library(tidyr)
+
+# make sure factors are set
+seedling_last <- seedling_last %>%
+  mutate(
+    Temperature_box = factor(Temperature_box),
+    Diversity_Class = factor(Diversity_Class)
+  ) %>%
+  droplevels()
+
+# run robust pairwise (trimmed means + bootstrap) within EACH temperature
+welch_pairwise_list <- split(seedling_last, seedling_last$Temperature_box) %>%
+  imap(function(dat, temp_lab) {
+    # robust post-hoc for one-way (Diversity_Class)
+    fit <- mcppb20(mean_seedling ~ Diversity_Class, data = dat, tr = 0.2, nboot = 2000)
+
+    # turn output into a tidy data frame
+    comp <- as.data.frame(fit$comp)
+    grp_cols <- grep("^Group", names(comp))  # usually "Group.1","Group.2"
+    comp %>%
+      mutate(
+        Temperature_box = temp_lab,
+        Level1 = fit$fnames[comp[[grp_cols[1]]]],
+        Level2 = fit$fnames[comp[[grp_cols[2]]]]
+      ) %>%
+      rename(
+        Diff      = psihat,
+        SE        = se,
+        CI_low    = ci.lower,
+        CI_high   = ci.upper,
+        p_value   = `p-value`
+      ) %>%
+      dplyr::select(Temperature_box, Level1, Level2, Diff, SE, CI_low, CI_high, p_value)
+  })
+
+welch_pairwise <- bind_rows(welch_pairwise_list)
+
+# peek
+dplyr::arrange(welch_pairwise, Temperature_box, Level1, Level2)
+
+```
+
+
+
+
+
+
+
+
