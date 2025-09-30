@@ -446,7 +446,7 @@ seedling_last <- seedling_last %>%
     Diversity_Class = factor(Diversity_Class)
   )
 
-ggplot(seedling_last, aes(x = Temperature_box, y = mean_seedling, fill = Diversity_Class)) +
+last_day_FvFm = ggplot(seedling_last, aes(x = Temperature_box, y = mean_seedling, fill = Diversity_Class)) +
   geom_boxplot(
     position = position_dodge(width = 0.8),
     width = 0.7,
@@ -478,6 +478,39 @@ ggplot(seedling_last, aes(x = Temperature_box, y = mean_seedling, fill = Diversi
     plot.title      = element_text(face = "bold")
   )
 
+last_day_FvFm_notitle = ggplot(seedling_last, aes(x = Temperature_box, y = mean_seedling, fill = Diversity_Class)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.shape = NA   # removes gray outlier dots
+  ) +
+  geom_point(
+    aes(fill = Diversity_Class),
+    shape = 21,
+    stroke = 0.4,
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    size = 1.6,
+    alpha = 0.55,
+    show.legend = FALSE
+  ) +
+  scale_x_discrete(
+    name   = "Temperature Treatments",
+    labels = c("15" = "15°C",
+               "Variable" = "Variable (15°C ↔ 25°C)",
+               "25" = "25°C")
+  ) +
+  scale_y_continuous("Fv/Fm after 106 days temperature stress") +
+  labs(
+    # title    = "Last Day Plant Performance of Different Diversity Class",
+    fill     = "Fungal species richness"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    plot.title      = element_text(face = "bold")
+  )
+
+ggsave("plots/lastday_fvfm.jpg", last_day_FvFm_notitle)
 
 ```
 
